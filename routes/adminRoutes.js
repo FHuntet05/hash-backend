@@ -1,52 +1,79 @@
-// RUTA: backend/routes/adminRoutes.js (v37.2 - AÑADIDA RUTA DE BARRIDO DE GAS)
+// RUTA: backend/routes/adminRoutes.js (v38.0 - SINCRONIZADO CON MEGA FÁBRICA)
 
 const express = require('express');
 const router = express.Router();
-const adminController = require('../controllers/adminController.js');
+// MODIFICADO: Se importan los nuevos nombres de las funciones del controlador
+const {
+    getDashboardStats,
+    getSettings,
+    updateSettings,
+    getAllUsers,
+    getUserDetails,
+    updateUser,
+    setUserStatus,
+    adjustUserBalance,
+    getAllTransactions,
+    createManualTransaction,
+    getPendingWithdrawals,
+    processWithdrawal,
+    getTreasuryWalletsList,
+    getWalletBalance,
+    sweepFunds,
+    sweepGas,
+    analyzeGasNeeds,
+    dispatchGas,
+    getAllFactories, // <-- Nombre nuevo
+    createFactory,   // <-- Nombre nuevo
+    updateFactory,   // <-- Nombre nuevo
+    deleteFactory,   // <-- Nombre nuevo
+    generateTwoFactorSecret,
+    verifyAndEnableTwoFactor,
+    sendBroadcastNotification,
+    getPendingBlockchainTxs,
+    cancelTransaction,
+    speedUpTransaction
+} = require('../controllers/adminController.js');
 const { protect, isAdmin } = require('../middleware/authMiddleware');
 
 // Rutas de Dashboard y Configuración
-router.get('/stats', protect, isAdmin, adminController.getDashboardStats);
-router.route('/settings').get(protect, isAdmin, adminController.getSettings).put(protect, isAdmin, adminController.updateSettings);
+router.get('/stats', protect, isAdmin, getDashboardStats);
+router.route('/settings').get(protect, isAdmin, getSettings).put(protect, isAdmin, updateSettings);
 
 // Rutas de Gestión de Usuarios
-router.get('/users', protect, isAdmin, adminController.getAllUsers);
-router.get('/users/:id/details', protect, isAdmin, adminController.getUserDetails);
-router.put('/users/:id', protect, isAdmin, adminController.updateUser);
-router.put('/users/:id/status', protect, isAdmin, adminController.setUserStatus);
-router.post('/users/:id/adjust-balance', protect, isAdmin, adminController.adjustUserBalance);
+router.get('/users', protect, isAdmin, getAllUsers);
+router.get('/users/:id/details', protect, isAdmin, getUserDetails);
+router.put('/users/:id', protect, isAdmin, updateUser);
+router.put('/users/:id/status', protect, isAdmin, setUserStatus);
+router.post('/users/:id/adjust-balance', protect, isAdmin, adjustUserBalance);
 
 // Rutas de Gestión de Transacciones y Retiros
-router.get('/transactions', protect, isAdmin, adminController.getAllTransactions);
-router.post('/transactions/manual', protect, isAdmin, adminController.createManualTransaction);
-router.get('/withdrawals/pending', protect, isAdmin, adminController.getPendingWithdrawals);
-router.put('/withdrawals/:id/process', protect, isAdmin, adminController.processWithdrawal);
+router.get('/transactions', protect, isAdmin, getAllTransactions);
+router.post('/transactions/manual', protect, isAdmin, createManualTransaction);
+router.get('/withdrawals/pending', protect, isAdmin, getPendingWithdrawals);
+router.put('/withdrawals/:id/process', protect, isAdmin, processWithdrawal);
 
 // Rutas de Tesorería y Dispensador
-router.get('/treasury/wallets-list', protect, isAdmin, adminController.getTreasuryWalletsList);
-router.post('/treasury/wallet-balance', protect, isAdmin, adminController.getWalletBalance);
-router.post('/sweep-funds', protect, isAdmin, adminController.sweepFunds);
+router.get('/treasury/wallets-list', protect, isAdmin, getTreasuryWalletsList);
+router.post('/treasury/wallet-balance', protect, isAdmin, getWalletBalance);
+router.post('/sweep-funds', protect, isAdmin, sweepFunds);
+router.post('/sweep-gas', protect, isAdmin, sweepGas);
+router.get('/gas-dispenser/analyze', protect, isAdmin, analyzeGasNeeds);
+router.post('/gas-dispenser/dispatch', protect, isAdmin, dispatchGas);
 
-// [CORRECCIÓN] - Se añade la ruta para la nueva funcionalidad de barrido de gas BNB.
-router.post('/sweep-gas', protect, isAdmin, adminController.sweepGas);
-
-router.get('/gas-dispenser/analyze', protect, isAdmin, adminController.analyzeGasNeeds);
-router.post('/gas-dispenser/dispatch', protect, isAdmin, adminController.dispatchGas);
-
-// Rutas de Gestión de Herramientas
-router.route('/tools').get(protect, isAdmin, adminController.getAllTools).post(protect, isAdmin, adminController.createTool);
-router.route('/tools/:id').put(protect, isAdmin, adminController.updateTool).delete(protect, isAdmin, adminController.deleteTool);
+// MODIFICADO: Rutas de Gestión de FÁBRICAS (antes Herramientas)
+router.route('/factories').get(protect, isAdmin, getAllFactories).post(protect, isAdmin, createFactory);
+router.route('/factories/:id').put(protect, isAdmin, updateFactory).delete(protect, isAdmin, deleteFactory);
 
 // Rutas de 2FA
-router.post('/2fa/generate', protect, isAdmin, adminController.generateTwoFactorSecret);
-router.post('/2fa/verify', protect, isAdmin, adminController.verifyAndEnableTwoFactor);
+router.post('/2fa/generate', protect, isAdmin, generateTwoFactorSecret);
+router.post('/2fa/verify', protect, isAdmin, verifyAndEnableTwoFactor);
 
 // Ruta de notificaciones 
-router.post('/notifications/send', protect, isAdmin, adminController.sendBroadcastNotification);
+router.post('/notifications/send', protect, isAdmin, sendBroadcastNotification);
 
 // Rutas de Monitor Blockchain
-router.get('/blockchain-monitor/pending', protect, isAdmin, adminController.getPendingBlockchainTxs);
-router.post('/blockchain-monitor/cancel-tx', protect, isAdmin, adminController.cancelTransaction);
-router.post('/blockchain-monitor/speedup-tx', protect, isAdmin, adminController.speedUpTransaction);
+router.get('/blockchain-monitor/pending', protect, isAdmin, getPendingBlockchainTxs);
+router.post('/blockchain-monitor/cancel-tx', protect, isAdmin, cancelTransaction);
+router.post('/blockchain-monitor/speedup-tx', protect, isAdmin, speedUpTransaction);
 
 module.exports = router;
