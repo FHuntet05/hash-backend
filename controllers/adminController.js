@@ -1,8 +1,8 @@
-// RUTA: backend/controllers/adminController.js (v42.0 - SINCRONIZADO CON MODELO FACTORY)
+// RUTA: backend/controllers/adminController.js (v43.0 - CON GESTIÓN DE ADMINS)
 
 const User = require('../models/userModel');
 const Transaction = require('../models/transactionModel');
-const Factory = require('../models/factoryModel'); // MODIFICADO: Se importa el nuevo modelo 'Factory'
+const Factory = require('../models/factoryModel');
 const Setting = require('../models/settingsModel');
 const CryptoWallet = require('../models/cryptoWalletModel');
 const mongoose = require('mongoose');
@@ -16,9 +16,6 @@ const gasEstimatorService = require('../services/gasEstimatorService');
 const { ethers } = require('ethers');
 const PendingTx = require('../models/pendingTxModel');
 const qrCodeToDataURLPromise = require('util').promisify(QRCode.toDataURL);
-
-// --- CÓDIGO RESTANTE (SIN CAMBIOS RELEVANTES EN ESTA SECCIÓN)... ---
-// [Se incluye el resto del código del controlador para asegurar que esté completo]
 
 const PLACEHOLDER_AVATAR_URL = 'https://i.postimg.cc/mD21B6r7/user-avatar-placeholder.png';
 const USDT_BSC_ADDRESS = '0x55d398326f99059fF775485246999027B3197955';
@@ -65,13 +62,10 @@ const setUserStatus = asyncHandler(async (req, res) => { const user = await User
 const getAllTransactions = asyncHandler(async (req, res) => { const pageSize = 15; const page = Number(req.query.page) || 1; let filter = {}; if (req.query.type) { filter.type = req.query.type; } if (req.query.search) { const usersFound = await User.find({ $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] }).select('_id'); filter.user = { $in: usersFound.map(user => user._id) }; } const count = await Transaction.countDocuments(filter); const transactions = await Transaction.find(filter).sort({ createdAt: -1 }).populate('user', 'username telegramId').limit(pageSize).skip(pageSize * (page - 1)).lean(); res.json({ transactions, page, pages: Math.ceil(count / pageSize), totalTransactions: count }); });
 const createManualTransaction = asyncHandler(async (req, res) => { const { userId, type, currency, amount, reason } = req.body; const session = await mongoose.startSession(); try { session.startTransaction(); const user = await User.findById(userId).session(session); if (!user) throw new Error('Usuario no encontrado.'); const currencyKey = currency.toLowerCase(); const originalBalance = user.balance[currencyKey] || 0; if (type === 'admin_credit') { user.balance[currencyKey] += amount; } else { if (originalBalance < amount) throw new Error('Saldo insuficiente para realizar el débito.'); user.balance[currencyKey] -= amount; } const updatedUser = await user.save({ session }); const transaction = new Transaction({ user: userId, type, currency, amount, description: reason, status: 'completed', metadata: { adminId: req.user._id.toString(), adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(201).json({ message: 'Transacción manual creada.', user: updatedUser.toObject() }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
 const getDashboardStats = asyncHandler(async (req, res) => { const [ totalUsers, totalDepositVolume, pendingWithdrawals, ] = await Promise.all([ User.countDocuments(), Transaction.aggregate([ { $match: { type: 'deposit', currency: 'USDT' } }, { $group: { _id: null, totalVolume: { $sum: '$amount' } } } ]), Transaction.countDocuments({ type: 'withdrawal', status: 'pending' }) ]); let centralWalletBalances = { usdt: 0, bnb: 0 }; try { const { bscWallet } = transactionService.getCentralWallets(); const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/'); const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider); const [bnbBalanceRaw, usdtBscBalanceRaw] = await Promise.all([ bscProvider.getBalance(bscWallet.address), usdtBscContract.balanceOf(bscWallet.address) ]); centralWalletBalances = { bnb: parseFloat(ethers.utils.formatEther(bnbBalanceRaw)), usdt: parseFloat(ethers.utils.formatUnits(usdtBscBalanceRaw, 18)) }; await checkAndSendGasAlert(centralWalletBalances.bnb); } catch (error) { console.error("Error al obtener el balance de la billetera central (Dashboard):", error); centralWalletBalances = { usdt: 0, bnb: 0 }; } res.json({ totalUsers, totalDepositVolume: totalDepositVolume[0]?.totalVolume || 0, pendingWithdrawals, centralWalletBalances }); });
-
-// --- MODIFICADO: CRUD para FÁBRICAS en lugar de Herramientas ---
 const getAllFactories = asyncHandler(async (req, res) => { const factories = await Factory.find({}).sort({ vipLevel: 1 }).lean(); res.json(factories); });
 const createFactory = asyncHandler(async (req, res) => { const newFactory = await Factory.create(req.body); res.status(201).json(newFactory); });
 const updateFactory = asyncHandler(async (req, res) => { const factory = await Factory.findByIdAndUpdate(req.params.id, req.body, { new: true }); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); res.json(factory); });
 const deleteFactory = asyncHandler(async (req, res) => { const factory = await Factory.findById(req.params.id); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); await factory.deleteOne(); res.json({ message: 'Fábrica eliminada.' }); });
-
 const getSettings = asyncHandler(async (req, res) => { const settings = await Setting.findOneAndUpdate({ singleton: 'global_settings' }, { $setOnInsert: { singleton: 'global_settings' } }, { upsert: true, new: true, setDefaultsOnInsert: true }).lean(); res.json(settings); });
 const updateSettings = asyncHandler(async (req, res) => { const updatedSettings = await Setting.findOneAndUpdate({ singleton: 'global_settings' }, req.body, { new: true }); res.json(updatedSettings); });
 const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `MegaFabrica Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
@@ -86,6 +80,94 @@ const sendBroadcastNotification = asyncHandler(async (req, res) => { const { mes
 const cancelTransaction = asyncHandler(async (req, res) => { const { txHash } = req.body; if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); } res.status(501).json({ message: 'Funcionalidad no implementada todavía.', requestedTxHash: txHash }); });
 const speedUpTransaction = asyncHandler(async (req, res) => { const { txHash } = req.body; if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); } res.status(501).json({ message: 'Funcionalidad no implementada todavía.', requestedTxHash: txHash }); });
 
+const promoteUserToAdmin = asyncHandler(async (req, res) => {
+    const { userId, temporaryPassword } = req.body;
+
+    // Solo el Super Admin puede promover a otros.
+    if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) {
+        res.status(403);
+        throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.');
+    }
+
+    if (!userId || !temporaryPassword) {
+        res.status(400);
+        throw new Error('Se requiere ID de usuario y contraseña temporal.');
+    }
+
+    const userToPromote = await User.findById(userId);
+
+    if (!userToPromote) {
+        res.status(404);
+        throw new Error('Usuario a promover no encontrado.');
+    }
+
+    userToPromote.role = 'admin';
+    userToPromote.password = temporaryPassword; // El hook pre-save se encargará de hashear
+    userToPromote.passwordResetRequired = true; // Forzar cambio en el primer login
+
+    await userToPromote.save();
+
+    res.json({ message: `El usuario ${userToPromote.username} ha sido promovido a Administrador.` });
+});
+
+const resetAdminPassword = asyncHandler(async (req, res) => {
+    const { userId, newTemporaryPassword } = req.body;
+
+    if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) {
+        res.status(403);
+        throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.');
+    }
+    
+    if (!userId || !newTemporaryPassword) {
+        res.status(400);
+        throw new Error('Se requiere ID de usuario y nueva contraseña temporal.');
+    }
+
+    const adminToReset = await User.findById(userId).select('+password');
+
+    if (!adminToReset || adminToReset.role !== 'admin') {
+        res.status(404);
+        throw new Error('Administrador no encontrado.');
+    }
+
+    adminToReset.password = newTemporaryPassword;
+    adminToReset.passwordResetRequired = true;
+
+    await adminToReset.save();
+
+    res.json({ message: `La contraseña del administrador ${adminToReset.username} ha sido restablecida.` });
+});
+
+const demoteAdminToUser = asyncHandler(async (req, res) => {
+    const { userId } = req.body;
+
+    if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) {
+        res.status(403);
+        throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.');
+    }
+
+    const adminToDemote = await User.findById(userId);
+
+    if (!adminToDemote || adminToDemote.role !== 'admin') {
+        res.status(404);
+        throw new Error('Administrador no encontrado.');
+    }
+
+    // No se puede degradar al Super Admin
+    if (adminToDemote.telegramId === process.env.ADMIN_TELEGRAM_ID) {
+        res.status(400);
+        throw new Error('No se puede degradar al Super Administrador.');
+    }
+
+    adminToDemote.role = 'user';
+    adminToDemote.password = undefined; // Elimina la contraseña de panel
+    adminToDemote.passwordResetRequired = false;
+
+    await adminToDemote.save();
+    
+    res.json({ message: `El administrador ${adminToDemote.username} ha sido degradado a usuario.` });
+});
+
 module.exports = {
   getPendingWithdrawals,
   processWithdrawal,
@@ -95,10 +177,10 @@ module.exports = {
   getDashboardStats,
   getAllTransactions,
   createManualTransaction,
-  getAllFactories, // MODIFICADO
-  createFactory,   // MODIFICADO
-  updateFactory,   // MODIFICADO
-  deleteFactory,   // MODIFICADO
+  getAllFactories,
+  createFactory,
+  updateFactory,
+  deleteFactory,
   getUserDetails,
   getSettings,
   updateSettings,
@@ -114,5 +196,8 @@ module.exports = {
   getPendingBlockchainTxs,
   cancelTransaction,
   speedUpTransaction,
-  sweepGas
+  sweepGas,
+  promoteUserToAdmin,
+  resetAdminPassword,
+  demoteAdminToUser
 };
