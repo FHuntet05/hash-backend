@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/adminController.js (v40.1 - VERSIÓN COMPLETA Y ESTABLE)
+// RUTA: backend/controllers/adminController.js (v41.0 - SANEADO - SÓLO BSC)
 
 const User = require('../models/userModel');
 const Transaction = require('../models/transactionModel');
@@ -14,12 +14,12 @@ const { sendTelegramMessage } = require('../services/notificationService');
 const transactionService = require('../services/transactionService');
 const gasEstimatorService = require('../services/gasEstimatorService');
 const { ethers } = require('ethers');
-const TronWeb = require('tronweb').default.TronWeb;
+// ELIMINADO: const TronWeb = require('tronweb').default.TronWeb;
 const PendingTx = require('../models/pendingTxModel');
 const qrCodeToDataURLPromise = require('util').promisify(QRCode.toDataURL);
 
 const PLACEHOLDER_AVATAR_URL = 'https://i.postimg.cc/mD21B6r7/user-avatar-placeholder.png';
-const USDT_TRON_ADDRESS = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+// ELIMINADO: const USDT_TRON_ADDRESS = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 const USDT_BSC_ADDRESS = '0x55d398326f99059fF775485246999027B3197955';
 const USDT_ABI = ['function balanceOf(address) view returns (uint256)'];
 
@@ -35,6 +35,7 @@ function promiseWithTimeout(promise, ms, timeoutMessage = 'Operación excedió e
 async function _getBalancesForAddress(address, chain) {
     const TIMEOUT_MS = 15000;
     try {
+        // MODIFICADO: Se elimina el if/else, solo queda la lógica de BSC.
         if (chain === 'BSC') {
             const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
             const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider);
@@ -43,17 +44,11 @@ async function _getBalancesForAddress(address, chain) {
                 promiseWithTimeout(bscProvider.getBalance(address), TIMEOUT_MS)
             ]);
             const bnbFormatted = ethers.utils.formatEther(bnbBalanceRaw);
-            return { usdt: parseFloat(ethers.utils.formatUnits(usdtBalanceRaw, 18)), bnb: parseFloat(bnbFormatted), trx: 0 };
-        } else if (chain === 'TRON') {
-            const tempTronWeb = new TronWeb({ fullHost: 'https://api.trongrid.io', headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY } });
-            tempTronWeb.setAddress(address);
-            const usdtTronContract = await tempTronWeb.contract().at(USDT_TRON_ADDRESS);
-            const [usdtBalanceRaw, trxBalanceRaw] = await Promise.all([
-                promiseWithTimeout(usdtTronContract.balanceOf(address).call(), TIMEOUT_MS),
-                promiseWithTimeout(tempTronWeb.trx.getBalance(address), TIMEOUT_MS)
-            ]);
-            const trxFormatted = tempTronWeb.fromSun(trxBalanceRaw);
-            return { usdt: parseFloat(ethers.utils.formatUnits(usdtBalanceRaw.toString(), 6)), trx: parseFloat(trxFormatted), bnb: 0 };
+            // MODIFICADO: Se elimina trx: 0 ya que es irrelevante.
+            return { usdt: parseFloat(ethers.utils.formatUnits(usdtBalanceRaw, 18)), bnb: parseFloat(bnbFormatted) };
+        } else {
+            // MODIFICADO: Si la cadena no es BSC, se lanza un error.
+            throw new Error(`Cadena no soportada: ${chain}. Solo se procesa BSC.`);
         }
     } catch (error) {
         console.error(`Error al obtener saldo para ${address} en ${chain}:`, error);
@@ -61,11 +56,13 @@ async function _getBalancesForAddress(address, chain) {
     }
 }
 
+// SIN CAMBIOS - Funcionalidad agnóstica
 const getPendingBlockchainTxs = asyncHandler(async (req, res) => {
     const pendingTxs = await PendingTx.find().sort({ createdAt: -1 }).limit(50);
     res.json(pendingTxs);
 });
 
+// SIN CAMBIOS - Funcionalidad agnóstica
 const getPendingWithdrawals = asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
@@ -87,6 +84,7 @@ const getPendingWithdrawals = asyncHandler(async (req, res) => {
     res.json({ withdrawals: withdrawalsWithDetails.filter(Boolean), page, pages: Math.ceil(total / limit), total });
 });
 
+// SIN CAMBIOS - Funcionalidad agnóstica
 const processWithdrawal = asyncHandler(async (req, res) => {
     const { status, adminNotes } = req.body;
     const { id } = req.params;
@@ -136,14 +134,14 @@ const processWithdrawal = asyncHandler(async (req, res) => {
     }
 });
 
-const checkAndSendGasAlert = async (chain, currentBalance) => {
+const checkAndSendGasAlert = async (currentBnbBalance) => {
     try {
         const settings = await Setting.findOne({ singleton: 'global_settings' }).lean();
         if (!settings || !settings.adminTelegramId) return;
-        const threshold = chain === 'BSC' ? settings.bnbAlertThreshold : settings.trxAlertThreshold;
-        const currency = chain === 'BSC' ? 'BNB' : 'TRX';
-        if (currentBalance < threshold) {
-            const message = `🚨 <b>Alerta de Nivel de Gas Bajo</b> 🚨\n\n` + `La billetera central de la red <b>${chain}</b> tiene un balance de <b>${currentBalance.toFixed(4)} ${currency}</b>, ` + `el cual está por debajo del umbral de alerta de <b>${threshold} ${currency}</b>.\n\n` + `Por favor, recargue fondos para asegurar la continuidad de las operaciones.`;
+        // MODIFICADO: La lógica ahora es específica para BNB.
+        const threshold = settings.bnbAlertThreshold;
+        if (currentBnbBalance < threshold) {
+            const message = `🚨 <b>Alerta de Nivel de Gas Bajo</b> 🚨\n\n` + `La billetera central de la red <b>BSC</b> tiene un balance de <b>${currentBnbBalance.toFixed(4)} BNB</b>, ` + `el cual está por debajo del umbral de alerta de <b>${threshold} BNB</b>.\n\n` + `Por favor, recargue fondos para asegurar la continuidad de las operaciones.`;
             await sendTelegramMessage(settings.adminTelegramId, message);
         }
     } catch (error) {
@@ -151,6 +149,7 @@ const checkAndSendGasAlert = async (chain, currentBalance) => {
     }
 };
 
+// SIN CAMBIOS - Funcionalidad agnóstica
 const getUserDetails = asyncHandler(async (req, res) => {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) { res.status(400); throw new Error('ID de usuario no válido.'); }
@@ -164,18 +163,18 @@ const getUserDetails = asyncHandler(async (req, res) => {
     res.json({ user: { ...user, photoUrl: userPhotoUrl || PLACEHOLDER_AVATAR_URL }, referrals: referralsWithPhoto, cryptoWallets, transactions: { items: transactions, page, totalPages: Math.ceil(totalTransactions / limit), totalItems: totalTransactions } });
 });
 
+// MODIFICADO: Se elimina NTX de las opciones de moneda.
 const adjustUserBalance = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { type, currency, amount, reason } = req.body;
-    if (!['admin_credit', 'admin_debit'].includes(type) || !['USDT', 'NTX'].includes(currency) || !amount || !reason) { res.status(400); throw new Error("Parámetros inválidos."); }
+    if (!['admin_credit', 'admin_debit'].includes(type) || !['USDT'].includes(currency) || !amount || !reason) { res.status(400); throw new Error("Parámetros inválidos. Moneda debe ser USDT."); }
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
-        const currencyKey = currency.toLowerCase();
+        const currencyKey = currency.toLowerCase(); // será 'usdt'
         let updateOperation = {};
         if (type === 'admin_credit') {
-            updateOperation = { $inc: { [`balance.${currencyKey}`]: amount } };
-            if (currency === 'USDT') { updateOperation.$inc.totalRecharge = amount; }
+            updateOperation = { $inc: { [`balance.${currencyKey}`]: amount, totalRecharge: amount } };
         } else {
             const userCheck = await User.findById(id).select(`balance.${currencyKey}`).session(session);
             if (!userCheck || (userCheck.balance[currencyKey] || 0) < amount) { throw new Error('Saldo insuficiente para realizar el débito.'); }
@@ -196,18 +195,18 @@ const adjustUserBalance = asyncHandler(async (req, res) => {
 });
 
 const getAllUsers = asyncHandler(async (req, res) => { const pageSize = 10; const page = Number(req.query.page) || 1; const filter = req.query.search ? { $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] } : {}; const count = await User.countDocuments(filter); const users = await User.find(filter).select('username telegramId role status createdAt balance.usdt photoFileId').sort({ createdAt: -1 }).limit(pageSize).skip(pageSize * (page - 1)).lean(); const usersWithPhotoUrl = await Promise.all(users.map(async (user) => ({ ...user, photoUrl: await getTemporaryPhotoUrl(user.photoFileId) || PLACEHOLDER_AVATAR_URL }))); res.json({ users: usersWithPhotoUrl, page, pages: Math.ceil(count / pageSize), totalUsers: count }); });
-const updateUser = asyncHandler(async (req, res) => { const { role, balanceUsdt, balanceNtx } = req.body; const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } user.role = role ?? user.role; user.balance.usdt = balanceUsdt ?? user.balance.usdt; user.balance.ntx = balanceNtx ?? user.balance.ntx; const updatedUser = await user.save(); res.json(updatedUser); });
+const updateUser = asyncHandler(async (req, res) => { const { role, balanceUsdt } = req.body; const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } user.role = role ?? user.role; user.balance.usdt = balanceUsdt ?? user.balance.usdt; const updatedUser = await user.save(); res.json(updatedUser); });
 const setUserStatus = asyncHandler(async (req, res) => { const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user._id.equals(req.user._id)) { res.status(400); throw new Error('No puedes cambiar tu propio estado.'); } user.status = req.body.status; const updatedUser = await user.save(); res.json(updatedUser); });
 const getAllTransactions = asyncHandler(async (req, res) => { const pageSize = 15; const page = Number(req.query.page) || 1; let filter = {}; if (req.query.type) { filter.type = req.query.type; } if (req.query.search) { const usersFound = await User.find({ $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] }).select('_id'); filter.user = { $in: usersFound.map(user => user._id) }; } const count = await Transaction.countDocuments(filter); const transactions = await Transaction.find(filter).sort({ createdAt: -1 }).populate('user', 'username telegramId').limit(pageSize).skip(pageSize * (page - 1)).lean(); res.json({ transactions, page, pages: Math.ceil(count / pageSize), totalTransactions: count }); });
 const createManualTransaction = asyncHandler(async (req, res) => { const { userId, type, currency, amount, reason } = req.body; const session = await mongoose.startSession(); try { session.startTransaction(); const user = await User.findById(userId).session(session); if (!user) throw new Error('Usuario no encontrado.'); const currencyKey = currency.toLowerCase(); const originalBalance = user.balance[currencyKey] || 0; if (type === 'admin_credit') { user.balance[currencyKey] += amount; } else { if (originalBalance < amount) throw new Error('Saldo insuficiente para realizar el débito.'); user.balance[currencyKey] -= amount; } const updatedUser = await user.save({ session }); const transaction = new Transaction({ user: userId, type, currency, amount, description: reason, status: 'completed', metadata: { adminId: req.user._id.toString(), adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(201).json({ message: 'Transacción manual creada.', user: updatedUser.toObject() }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
-const getDashboardStats = asyncHandler(async (req, res) => { const [ totalUsers, totalDepositVolume, pendingWithdrawals, ] = await Promise.all([ User.countDocuments(), Transaction.aggregate([ { $match: { type: 'deposit', currency: 'USDT' } }, { $group: { _id: null, totalVolume: { $sum: '$amount' } } } ]), Transaction.countDocuments({ type: 'withdrawal', status: 'pending' }) ]); let centralWalletBalances = { usdt: 0, bnb: 0, trx: 0 }; try { const { bscWallet, tronWallet } = transactionService.getCentralWallets(); const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/'); const tronWebInstance = new TronWeb({ fullHost: 'https://api.trongrid.io', headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY } }); tronWebInstance.setPrivateKey(tronWallet.privateKey); const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider); const usdtTronContract = await tronWebInstance.contract().at(USDT_TRON_ADDRESS); const [bnbBalanceRaw, trxBalanceRaw, usdtBscBalanceRaw, usdtTronBalanceRaw] = await Promise.all([ bscProvider.getBalance(bscWallet.address), tronWebInstance.trx.getBalance(tronWallet.address), usdtBscContract.balanceOf(bscWallet.address), usdtTronContract.balanceOf(tronWallet.address).call() ]); centralWalletBalances = { bnb: parseFloat(ethers.utils.formatEther(bnbBalanceRaw)), trx: parseFloat(tronWebInstance.fromSun(trxBalanceRaw)), usdt: parseFloat(ethers.utils.formatUnits(usdtBscBalanceRaw, 18)) + parseFloat(ethers.utils.formatUnits(usdtTronBalanceRaw.toString(), 6)) }; await checkAndSendGasAlert('BSC', centralWalletBalances.bnb); await checkAndSendGasAlert('TRON', centralWalletBalances.trx); } catch (error) { console.error("Error al obtener el balance de la billetera central (Dashboard):", error); centralWalletBalances = { usdt: 0, bnb: 0, trx: 0 }; } res.json({ totalUsers, totalDepositVolume: totalDepositVolume[0]?.totalVolume || 0, pendingWithdrawals, centralWalletBalances }); });
+const getDashboardStats = asyncHandler(async (req, res) => { const [ totalUsers, totalDepositVolume, pendingWithdrawals, ] = await Promise.all([ User.countDocuments(), Transaction.aggregate([ { $match: { type: 'deposit', currency: 'USDT' } }, { $group: { _id: null, totalVolume: { $sum: '$amount' } } } ]), Transaction.countDocuments({ type: 'withdrawal', status: 'pending' }) ]); let centralWalletBalances = { usdt: 0, bnb: 0 }; try { const { bscWallet } = transactionService.getCentralWallets(); const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/'); const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider); const [bnbBalanceRaw, usdtBscBalanceRaw] = await Promise.all([ bscProvider.getBalance(bscWallet.address), usdtBscContract.balanceOf(bscWallet.address) ]); centralWalletBalances = { bnb: parseFloat(ethers.utils.formatEther(bnbBalanceRaw)), usdt: parseFloat(ethers.utils.formatUnits(usdtBscBalanceRaw, 18)) }; await checkAndSendGasAlert(centralWalletBalances.bnb); } catch (error) { console.error("Error al obtener el balance de la billetera central (Dashboard):", error); centralWalletBalances = { usdt: 0, bnb: 0 }; } res.json({ totalUsers, totalDepositVolume: totalDepositVolume[0]?.totalVolume || 0, pendingWithdrawals, centralWalletBalances }); });
 const getAllTools = asyncHandler(async (req, res) => { const tools = await Tool.find({}).sort({ vipLevel: 1 }).lean(); res.json(tools); });
 const createTool = asyncHandler(async (req, res) => { const newTool = await Tool.create(req.body); res.status(201).json(newTool); });
 const updateTool = asyncHandler(async (req, res) => { const tool = await Tool.findByIdAndUpdate(req.params.id, req.body, { new: true }); if (!tool) return res.status(404).json({ message: 'Herramienta no encontrada.' }); res.json(tool); });
 const deleteTool = asyncHandler(async (req, res) => { const tool = await Tool.findById(req.params.id); if (!tool) return res.status(404).json({ message: 'Herramienta no encontrada.' }); await tool.deleteOne(); res.json({ message: 'Herramienta eliminada.' }); });
 const getSettings = asyncHandler(async (req, res) => { const settings = await Setting.findOneAndUpdate({ singleton: 'global_settings' }, { $setOnInsert: { singleton: 'global_settings' } }, { upsert: true, new: true, setDefaultsOnInsert: true }).lean(); res.json(settings); });
 const updateSettings = asyncHandler(async (req, res) => { const updatedSettings = await Setting.findOneAndUpdate({ singleton: 'global_settings' }, req.body, { new: true }); res.json(updatedSettings); });
-const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `NeuroLink Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
+const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `MegaFabrica Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
 const verifyAndEnableTwoFactor = asyncHandler(async (req, res) => { const { token } = req.body; const user = await User.findById(req.user.id).select('+twoFactorSecret'); if (!user || !user.twoFactorSecret) return res.status(400).json({ message: 'No se ha generado un secreto 2FA.' }); const verified = speakeasy.totp.verify({ secret: user.twoFactorSecret, encoding: 'base32', token }); if (verified) { user.isTwoFactorEnabled = true; await user.save(); res.json({ message: '¡2FA habilitado!' }); } else { res.status(400).json({ message: 'Token inválido.' }); }});
 const getWalletBalance = asyncHandler(async (req, res) => { const { address, chain } = req.body; if (!address || !chain) { res.status(400); throw new Error('Se requiere address y chain'); } try { const balances = await _getBalancesForAddress(address, chain); res.json({ success: true, balances }); } catch (error) { res.status(500).json({ success: false, message: error.message }); }});
 
@@ -218,64 +217,41 @@ const getTreasuryWalletsList = asyncHandler(async (req, res) => {
     const search = req.query.search || '';
     let query = {};
     if (chain) query.chain = chain;
-    if (search) {
-        const userQuery = { username: { $regex: search, $options: 'i' } };
-        const users = await User.find(userQuery).select('_id');
-        const userIds = users.map(u => u._id);
-        query.$or = [{ address: { $regex: search, $options: 'i' } }, { user: { $in: userIds } }];
-    }
-    const [totalWallets, wallets] = await Promise.all([
-        CryptoWallet.countDocuments(query),
-        CryptoWallet.find(query).populate('user', 'username').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean()
-    ]);
-    if (totalWallets === 0) {
-        return res.json({ wallets: [], pagination: { currentPage: 1, totalPages: 0, totalWallets: 0 }, summary: { usdt: 0, bnb: 0, trx: 0 } });
-    }
+    if (search) { const userQuery = { username: { $regex: search, $options: 'i' } }; const users = await User.find(userQuery).select('_id'); const userIds = users.map(u => u._id); query.$or = [{ address: { $regex: search, $options: 'i' } }, { user: { $in: userIds } }]; }
+    const [totalWallets, wallets] = await Promise.all([ CryptoWallet.countDocuments(query), CryptoWallet.find(query).populate('user', 'username').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean() ]);
+    if (totalWallets === 0) { return res.json({ wallets: [], pagination: { currentPage: 1, totalPages: 0, totalWallets: 0 }, summary: { usdt: 0, bnb: 0 } }); }
     const walletsWithDetails = await Promise.all(wallets.map(async (wallet) => {
         try {
             const balances = await _getBalancesForAddress(wallet.address, wallet.chain);
             let estimatedRequiredGas = 0;
             if (balances.usdt > 0.000001) {
                 try {
-                    if (wallet.chain === 'BSC') { estimatedRequiredGas = await gasEstimatorService.estimateBscSweepCost(wallet.address, balances.usdt); } 
-                    else if (wallet.chain === 'TRON') { estimatedRequiredGas = await gasEstimatorService.estimateTronSweepCost(wallet.address, balances.usdt); }
-                } catch (gasError) {
-                    console.error(`Error estimando gas para ${wallet.address}: ${gasError.message}`);
-                    estimatedRequiredGas = 0;
-                }
+                    // MODIFICADO: Se elimina el if/else de TRON.
+                    estimatedRequiredGas = await gasEstimatorService.estimateBscSweepCost(wallet.address, balances.usdt);
+                } catch (gasError) { console.error(`Error estimando gas para ${wallet.address}: ${gasError.message}`); estimatedRequiredGas = 0; }
             }
-            return { ...wallet, usdtBalance: balances.usdt, gasBalance: wallet.chain === 'BSC' ? balances.bnb : balances.trx, estimatedRequiredGas };
-        } catch (error) {
-            return { ...wallet, usdtBalance: 0, gasBalance: 0, estimatedRequiredGas: 0, error: `Fallo al obtener balance: ${error.message}` };
-        }
+            return { ...wallet, usdtBalance: balances.usdt, gasBalance: balances.bnb, estimatedRequiredGas };
+        } catch (error) { return { ...wallet, usdtBalance: 0, gasBalance: 0, estimatedRequiredGas: 0, error: `Fallo al obtener balance: ${error.message}` }; }
     }));
     const summary = walletsWithDetails.reduce((acc, wallet) => {
         acc.usdt += wallet.usdtBalance || 0;
-        if (wallet.chain === 'BSC') acc.bnb += wallet.gasBalance || 0;
-        else if (wallet.chain === 'TRON') acc.trx += wallet.gasBalance || 0;
+        // MODIFICADO: Solo se acumula bnb.
+        acc.bnb += wallet.gasBalance || 0;
         return acc;
-    }, { usdt: 0, bnb: 0, trx: 0 });
-    res.json({
-        wallets: walletsWithDetails,
-        pagination: { currentPage: page, totalPages: Math.ceil(totalWallets / limit), totalWallets },
-        summary
-    });
+    }, { usdt: 0, bnb: 0 });
+    res.json({ wallets: walletsWithDetails, pagination: { currentPage: page, totalPages: Math.ceil(totalWallets / limit), totalWallets }, summary });
 });
 
 const sweepFunds = asyncHandler(async (req, res) => {
     const { chain, token, recipientAddress, walletsToSweep } = req.body;
-    if (!chain || !token || !recipientAddress || !walletsToSweep || !Array.isArray(walletsToSweep)) {
-        res.status(400); throw new Error("Parámetros de barrido inválidos.");
-    }
-    if (token.toUpperCase() !== 'USDT') {
-        res.status(400); throw new Error("Solo se puede barrer USDT.");
-    }
+    if (!chain || !token || !recipientAddress || !walletsToSweep || !Array.isArray(walletsToSweep)) { res.status(400); throw new Error("Parámetros de barrido inválidos."); }
+    if (chain.toUpperCase() !== 'BSC') { res.status(400); throw new Error("Solo se puede barrer desde la cadena BSC."); }
+    if (token.toUpperCase() !== 'USDT') { res.status(400); throw new Error("Solo se puede barrer USDT."); }
     const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: chain }).lean();
-    if (wallets.length === 0) {
-        return res.json({ message: "Wallets candidatas no encontradas.", summary: {}, details: [] });
-    }
+    if (wallets.length === 0) { return res.json({ message: "Wallets candidatas no encontradas.", summary: {}, details: [] }); }
     const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedTxs: 0, totalSwept: 0 }, details: [] };
-    const sweepFunction = chain === 'BSC' ? transactionService.sweepUsdtOnBscFromDerivedWallet : transactionService.sweepUsdtOnTronFromDerivedWallet;
+    // MODIFICADO: La función es directamente la de BSC.
+    const sweepFunction = transactionService.sweepUsdtOnBscFromDerivedWallet;
     for (const wallet of wallets) {
         try {
             const { txHash, amountSwept } = await sweepFunction(wallet.derivationIndex, recipientAddress);
@@ -292,18 +268,13 @@ const sweepFunds = asyncHandler(async (req, res) => {
 
 const sweepGas = asyncHandler(async (req, res) => {
     const { chain, recipientAddress, walletsToSweep } = req.body;
-    if (!['BSC', 'TRON'].includes(chain)) {
-        res.status(400); throw new Error("Cadena no soportada para barrido de gas. Debe ser BSC o TRON.");
-    }
-    if (!recipientAddress || !walletsToSweep || !Array.isArray(walletsToSweep)) {
-        res.status(400); throw new Error("Parámetros de barrido de gas inválidos.");
-    }
+    if (chain !== 'BSC') { res.status(400); throw new Error("Cadena no soportada para barrido de gas. Debe ser BSC."); }
+    if (!recipientAddress || !walletsToSweep || !Array.isArray(walletsToSweep)) { res.status(400); throw new Error("Parámetros de barrido de gas inválidos."); }
     const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: chain }).lean();
-    if (wallets.length === 0) {
-        return res.json({ message: "Wallets candidatas no encontradas.", summary: {}, details: [] });
-    }
+    if (wallets.length === 0) { return res.json({ message: "Wallets candidatas no encontradas.", summary: {}, details: [] }); }
     const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedTxs: 0 }, details: [] };
-    const sweepFunction = chain === 'BSC' ? transactionService.sweepBnbFromDerivedWallet : transactionService.sweepTrxFromDerivedWallet;
+    // MODIFICADO: La función es directamente la de BSC.
+    const sweepFunction = transactionService.sweepBnbFromDerivedWallet;
     for (const wallet of wallets) {
         try {
             const txHash = await sweepFunction(wallet.derivationIndex, recipientAddress);
@@ -322,55 +293,40 @@ const analyzeGasNeeds = asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 15;
     const chain = req.query.chain;
-    if (!['BSC', 'TRON'].includes(chain)) {
-        res.status(400); throw new Error("Cadena no válida. Debe ser BSC o TRON.");
-    }
+    if (chain !== 'BSC') { res.status(400); throw new Error("Cadena no válida. Debe ser BSC."); }
     let centralWalletBalance = 0;
-    const { bscWallet, tronWallet } = transactionService.getCentralWallets();
-    const centralAddress = chain === 'BSC' ? bscWallet.address : tronWallet.address;
+    // MODIFICADO: Se obtiene solo la bscWallet.
+    const { bscWallet } = transactionService.getCentralWallets();
+    const centralAddress = bscWallet.address;
     const [totalWalletsInChain, balanceRaw] = await Promise.all([
-        CryptoWallet.countDocuments({ chain }),
-        chain === 'BSC' 
-            ? new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/').getBalance(centralAddress) 
-            : new TronWeb({ fullHost: 'https://api.trongrid.io', headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY } }).trx.getBalance(centralAddress)
-    ]).catch(err => {
-        console.error("Fallo al obtener datos iniciales (Dispensador):", err);
-        throw new Error("Error de red al contactar nodo Blockchain.");
-    });
-    centralWalletBalance = parseFloat(chain === 'BSC' ? ethers.utils.formatEther(balanceRaw) : TronWeb.fromSun(balanceRaw));
+        CryptoWallet.countDocuments({ chain: 'BSC' }),
+        new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/').getBalance(centralAddress) 
+    ]).catch(err => { console.error("Fallo al obtener datos iniciales (Dispensador):", err); throw new Error("Error de red al contactar nodo Blockchain."); });
+    centralWalletBalance = parseFloat(ethers.utils.formatEther(balanceRaw));
     const walletsOnPage = await CryptoWallet.find({ chain }).populate('user', 'username').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean();
     const walletsNeedingGasPromises = walletsOnPage.map(async (wallet) => {
         try {
             const balances = await _getBalancesForAddress(wallet.address, chain);
             if (!balances || balances.usdt <= 0.000001) return null;
-            const requiredGas = chain === 'BSC' 
-                ? await gasEstimatorService.estimateBscSweepCost(wallet.address, balances.usdt) 
-                : await gasEstimatorService.estimateTronSweepCost(wallet.address, balances.usdt);
-            const gasBalance = chain === 'BSC' ? balances.bnb : balances.trx;
+            // MODIFICADO: Se elimina la lógica condicional de TRON.
+            const requiredGas = await gasEstimatorService.estimateBscSweepCost(wallet.address, balances.usdt);
+            const gasBalance = balances.bnb;
             if (gasBalance < requiredGas - GAS_SUFFICIENT_TOLERANCE) {
                 return { address: wallet.address, user: wallet.user, usdtBalance: balances.usdt, gasBalance, requiredGas };
             }
             return null;
-        } catch (error) {
-            console.error(`Error analizando gas para wallet ${wallet.address}: ${error.message}`);
-            return null;
-        }
+        } catch (error) { console.error(`Error analizando gas para wallet ${wallet.address}: ${error.message}`); return null; }
     });
     const filteredWallets = (await Promise.all(walletsNeedingGasPromises)).filter(Boolean);
-    res.json({
-        centralWalletBalance,
-        wallets: filteredWallets,
-        pagination: { currentPage: page, totalPages: Math.ceil(totalWalletsInChain / limit), totalWallets: filteredWallets.length }
-    });
+    res.json({ centralWalletBalance, wallets: filteredWallets, pagination: { currentPage: page, totalPages: Math.ceil(totalWalletsInChain / limit), totalWallets: filteredWallets.length } });
 });
 
 const dispatchGas = asyncHandler(async (req, res) => {
     const { chain, targets } = req.body;
-    if (!chain || !Array.isArray(targets) || targets.length === 0) {
-        res.status(400); throw new Error("Petición inválida.");
-    }
+    if (chain !== 'BSC' || !Array.isArray(targets) || targets.length === 0) { res.status(400); throw new Error("Petición inválida. La cadena debe ser BSC."); }
     const report = { summary: { success: 0, failed: 0, totalDispatched: 0 }, details: [] };
-    const sendFunction = chain === 'BSC' ? transactionService.sendBscGas : transactionService.sendTronTrx;
+    // MODIFICADO: La función es directamente la de BSC.
+    const sendFunction = transactionService.sendBscGas;
     for (const target of targets) {
         try {
             const txHash = await sendFunction(target.address, target.amount);
@@ -385,6 +341,7 @@ const dispatchGas = asyncHandler(async (req, res) => {
     res.json(report);
 });
 
+// SIN CAMBIOS - Funcionalidad agnóstica
 const sendBroadcastNotification = asyncHandler(async (req, res) => {
     const { message, target, imageUrl, buttons } = req.body;
     if (!message || !target) { res.status(400); throw new Error("Mensaje y público objetivo son requeridos."); }
@@ -410,12 +367,14 @@ const sendBroadcastNotification = asyncHandler(async (req, res) => {
     })();
 });
 
+// SIN CAMBIOS - Funcionalidad agnóstica
 const cancelTransaction = asyncHandler(async (req, res) => {
     const { txHash } = req.body;
     if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); }
     res.status(501).json({ message: 'Funcionalidad no implementada todavía.', requestedTxHash: txHash });
 });
 
+// SIN CAMBIOS - Funcionalidad agnóstica
 const speedUpTransaction = asyncHandler(async (req, res) => {
     const { txHash } = req.body;
     if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); }
@@ -447,7 +406,7 @@ module.exports = {
   dispatchGas,
   adjustUserBalance,
   sendBroadcastNotification,
-  checkAndSendGasAlert,
+  // checkAndSendGasAlert, // No es necesario exportarla, es una función de ayuda interna.
   getPendingBlockchainTxs,
   cancelTransaction,
   speedUpTransaction,

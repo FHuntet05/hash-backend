@@ -1,7 +1,7 @@
-// backend/controllers/paymentController.js (VERSIÓN CON INICIALIZACIÓN DE BLOQUE INTELIGENTE)
+// backend/controllers/paymentController.js (VERSIÓN v2.0 - SÓLO BSC)
 
 const { ethers } = require('ethers');
-const { TronWeb } = require('tronweb'); 
+// ELIMINADO: const { TronWeb } = require('tronweb'); 
 const CryptoWallet = require('../models/cryptoWalletModel');
 const { getPrice } = require('../services/priceService');
 
@@ -9,7 +9,7 @@ const hdNode = ethers.utils.HDNode.fromMnemonic(process.env.MASTER_SEED_PHRASE);
 const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
 
 /**
- * Controlador para generar o recuperar una dirección de depósito para un usuario.
+ * Controlador para generar o recuperar una dirección de depósito BSC para un usuario.
  */
 const generateAddress = async (req, res) => {
   const { chain } = req.body;
@@ -19,61 +19,40 @@ const generateAddress = async (req, res) => {
     return res.status(400).json({ message: 'Se requiere la cadena (chain).' });
   }
 
+  // MODIFICADO: Forzamos la lógica a ser exclusivamente para BSC.
+  if (chain !== 'BSC') {
+    return res.status(400).json({ message: 'La única cadena soportada para depósitos es BSC.' });
+  }
+
   try {
     // 1. Buscamos si la wallet ya existe.
-    let wallet = await CryptoWallet.findOne({ user: userId, chain });
+    let wallet = await CryptoWallet.findOne({ user: userId, chain: 'BSC' });
     if (wallet) {
       return res.status(200).json({ address: wallet.address });
     }
 
     // --- Si la wallet no existe, procedemos a crearla ---
-    console.log(`[WalletGen] Creando nueva wallet ${chain} para el usuario ${userId}`);
+    console.log(`[WalletGen] Creando nueva wallet BSC para el usuario ${userId}`);
     const lastWallet = await CryptoWallet.findOne().sort({ derivationIndex: -1 });
     const newIndex = lastWallet ? lastWallet.derivationIndex + 1 : 0;
     
-    let newAddress;
+    // MODIFICADO: Se elimina el bloque 'if/else' y se deja solo la lógica de BSC.
+    const derivedNode = hdNode.derivePath(`m/44'/60'/0'/0/${newIndex}`);
+    const newAddress = derivedNode.address;
+    
     const walletData = {
         user: userId,
-        chain,
+        chain: 'BSC',
+        address: newAddress,
         derivationIndex: newIndex,
     };
 
-    if (chain === 'BSC') {
-      const derivedNode = hdNode.derivePath(`m/44'/60'/0'/0/${newIndex}`);
-      newAddress = derivedNode.address;
-      walletData.address = newAddress;
+    // Obtenemos el bloque actual de la red para que el monitor no empiece desde cero.
+    const currentBlock = await bscProvider.getBlockNumber();
+    walletData.lastScannedBlock = currentBlock;
+    console.log(`[WalletGen] Nueva wallet BSC inicializada en el bloque: ${currentBlock}`);
 
-      // [SOLUCIÓN PERMANENTE] - INICIO DE LA MODIFICACIÓN
-      // Obtenemos el bloque actual de la red para que el monitor no empiece desde cero.
-      const currentBlock = await bscProvider.getBlockNumber();
-      walletData.lastScannedBlock = currentBlock;
-      console.log(`[WalletGen] Nueva wallet BSC inicializada en el bloque: ${currentBlock}`);
-      // [SOLUCIÓN PERMANENTE] - FIN DE LA MODIFICACIÓN
-
-    } else if (chain === 'TRON') {
-      const tronMainPrivateKey = hdNode.derivePath(`m/44'/195'/0'/0/0`).privateKey.substring(2);
-      const tronWeb = new TronWeb({
-          fullHost: 'https://api.trongrid.io',
-          headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY },
-          privateKey: tronMainPrivateKey
-      });
-      const childNode = hdNode.derivePath(`m/44'/195'/0'/0/${newIndex}`);
-      const privateKeyWithoutPrefix = childNode.privateKey.substring(2);
-      newAddress = await tronWeb.address.fromPrivateKey(privateKeyWithoutPrefix);
-      walletData.address = newAddress;
-
-      // [SOLUCIÓN PERMANENTE] - INICIO DE LA MODIFICACIÓN
-      // Para TRON, usamos el timestamp actual.
-      const currentTimestamp = Date.now();
-      walletData.lastScannedTimestamp = currentTimestamp;
-      console.log(`[WalletGen] Nueva wallet TRON inicializada en el timestamp: ${currentTimestamp}`);
-      // [SOLUCIÓN PERMANENTE] - FIN DE LA MODIFICACIÓN
-
-    } else {
-      return res.status(400).json({ message: 'Cadena no soportada.' });
-    }
-    
-    // Creamos y guardamos la nueva wallet con todos los datos, incluyendo el bloque/timestamp inicial.
+    // Creamos y guardamos la nueva wallet con todos los datos.
     wallet = new CryptoWallet(walletData);
     await wallet.save();
     
@@ -89,18 +68,15 @@ const generateAddress = async (req, res) => {
  */
 const getPrices = async (req, res) => {
     try {
-        const [bnbPrice, trxPrice] = await Promise.all([
-            getPrice('BNB'),
-            getPrice('TRX')
-        ]);
+        // MODIFICADO: Se elimina la obtención del precio de TRX.
+        const bnbPrice = await getPrice('BNB');
 
         const prices = {
             BNB: bnbPrice,
-            TRX: trxPrice,
-            USDT: 1,
+            USDT: 1, // USDT es nuestra moneda base.
         };
 
-        if (!prices.BNB || !prices.TRX) {
+        if (!prices.BNB) {
             console.warn("[API] Solicitud de precios mientras el servicio aún no los ha guardado en la DB.");
             return res.status(503).json({ message: 'El servicio de precios no está disponible temporalmente. Intente de nuevo en un minuto.' });
         }

@@ -1,6 +1,23 @@
-// backend/models/userModel.js (VERSIÓN FÉNIX v23.2 - SOLUCIÓN EQUIPO)
+// backend/models/userModel.js (VERSIÓN MEGA FÁBRICA v2.0 - LÓGICA DE PRODUCCIÓN DETALLADA)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+
+/**
+ * SUB-SCHEMA PARA FÁBRICAS COMPRADAS
+ * Define la estructura de cada instancia de fábrica que un usuario posee.
+ * Contiene el estado individual de cada activo productivo.
+ */
+const purchasedFactorySchema = new mongoose.Schema({
+  // MODIFICADO: La referencia ahora es al nuevo modelo 'Factory'.
+  factory: { type: mongoose.Schema.Types.ObjectId, ref: 'Factory', required: true }, 
+  purchaseDate: { type: Date, default: Date.now }, 
+  expiryDate: { type: Date, required: true },
+  
+  // NUEVO: 'lastProductionTimestamp' registra el último momento exacto en que se calculó la producción.
+  // Esto permite un cálculo preciso de la producción acumulada desde el último punto.
+  lastProductionTimestamp: { type: Date, default: Date.now } 
+}, { _id: true });
+
 
 const userSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true, index: true },
@@ -18,36 +35,30 @@ const userSchema = new mongoose.Schema({
   
   photoFileId: { type: String, default: null },
 
+  // MODIFICADO: El balance del usuario ahora es únicamente en USDT y se mantiene separado de la producción.
   balance: { 
-    ntx: { type: Number, default: 0 }, 
     usdt: { type: Number, default: 0 } 
+    // ELIMINADO: balance.ntx
   },
   
-  // [SOLUCIÓN EQUIPO] - INICIO DE LA MODIFICACIÓN
-  // Añadimos los campos para llevar el registro acumulado de recargas y retiros.
-  // Estos son la fuente de datos para las estadísticas de "Recargas del Equipo" y "Retiros del Equipo".
+  // NUEVO: Balance de producción. Aquí se acumula el USDT generado por las fábricas.
+  // Este saldo no es líquido hasta que el usuario lo reclama.
+  productionBalance: {
+    usdt: { type: Number, default: 0 }
+  },
+
+  // NUEVO y MANTENIDO: Campos para estadísticas y trazabilidad.
   totalRecharge: { type: Number, default: 0 },
   totalWithdrawal: { type: Number, default: 0 },
-  // [SOLUCIÓN EQUIPO] - FIN DE LA MODIFICACIÓN
+  totalProductionClaimed: { type: Number, default: 0 }, // Registra todo lo que el usuario ha reclamado de sus fábricas.
+  totalSpending: { type: Number, default: 0 }, // Registra el total gastado en fábricas.
 
-  baseMiningRate: { type: Number, default: 500.00 },
-  effectiveMiningRate: { type: Number, default: 500.00 },
-  claimedTasks: { 
-    boughtUpgrade: { type: Boolean, default: false }, 
-    invitedTenFriends: { type: Boolean, default: false }, 
-    joinedTelegram: { type: Boolean, default: false } 
-  },
-
-  telegramVisited: { type: Boolean, default: false },
-
-  activeTools: [{ 
-    tool: { type: mongoose.Schema.Types.ObjectId, ref: 'Tool', required: true }, 
-    purchaseDate: { type: Date, default: Date.now }, 
-    expiryDate: { type: Date, required: true } 
-  }],
-  miningStatus: { type: String, enum: ['IDLE', 'MINING', 'CLAIMABLE'], default: 'IDLE' },
-  lastMiningClaim: { type: Date, default: Date.now },
+  // MODIFICADO: 'activeTools' se renombra y reestructura a 'purchasedFactories'.
+  purchasedFactories: [purchasedFactorySchema],
   
+  // ELIMINADOS: Todos los campos relacionados con la lógica de minado de Neuro Link.
+  // - baseMiningRate, effectiveMiningRate, claimedTasks, telegramVisited, miningStatus, lastMiningClaim.
+
   referralCode: { type: String, unique: true, default: null },
   referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   referrals: [{ 
@@ -56,13 +67,31 @@ const userSchema = new mongoose.Schema({
   }],
 }, {
   timestamps: true,
+  // NUEVO: Se define un método virtual para calcular la producción total diaria del usuario.
+  // Esto es más eficiente que almacenarlo, ya que se calcula solo cuando se necesita.
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// VIRTUAL: Calcula la producción total diaria del usuario en USDT.
+userSchema.virtual('totalDailyProduction').get(function() {
+  if (!this.purchasedFactories || this.purchasedFactories.length === 0) {
+    return 0;
+  }
+  // Se necesita popular 'purchasedFactories.factory' para que esto funcione.
+  return this.purchasedFactories.reduce((total, pf) => {
+    // Si la fábrica ha expirado, no produce.
+    if (new Date() > pf.expiryDate) {
+        return total;
+    }
+    // Asegurarse de que el campo dailyProduction esté disponible (requiere .populate())
+    return total + (pf.factory.dailyProduction || 0);
+  }, 0);
 });
 
 /**
- * CORRECCIÓN v16.5: Se unificaron los dos hooks 'pre-save' en uno solo.
- * Esto evita condiciones de carrera y comportamiento impredecible al guardar un usuario.
- * Ahora la lógica de generación de código de referido y el hash de contraseña
- * se ejecutan en secuencia dentro del mismo hook asíncrono.
+ * Hook 'pre-save' unificado. Se mantiene sin cambios en su lógica interna.
+ * Ejecuta la generación de código de referido y el hasheo de contraseña.
  */
 userSchema.pre('save', async function (next) {
   // 1. Lógica de generación de código de referido
@@ -79,6 +108,9 @@ userSchema.pre('save', async function (next) {
   next();
 });
 
+/**
+ * Método para comparar contraseñas. Se mantiene sin cambios.
+ */
 userSchema.methods.matchPassword = async function(enteredPassword) {
   if (!this.password || !enteredPassword) return false;
   return await bcrypt.compare(enteredPassword, this.password);

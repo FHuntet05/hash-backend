@@ -1,6 +1,6 @@
-// backend/controllers/treasuryController.js (VERSIÓN v18.7 - FINAL CON LEAN)
+// backend/controllers/treasuryController.js (VERSIÓN v19.0 - SÓLO BSC)
 const { ethers } = require('ethers');
-const TronWeb = require('tronweb').default.TronWeb; 
+// ELIMINADO: const TronWeb = require('tronweb').default.TronWeb; 
 const User = require('../models/userModel');
 const CryptoWallet = require('../models/cryptoWalletModel');
 const Transaction = require('../models/transactionModel');
@@ -9,8 +9,8 @@ const transactionService = require('../services/transactionService');
 const mongoose = require('mongoose');
 
 const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
-const tronWeb = new TronWeb({ fullHost: 'https://api.trongrid.io', headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY } });
-const USDT_TRON_ADDRESS = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+// ELIMINADO: const tronWeb = new TronWeb({ fullHost: 'https://api.trongrid.io', headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY } });
+// ELIMINADO: const USDT_TRON_ADDRESS = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 const USDT_BSC_ADDRESS = '0x55d398326f99059fF775485246999027B3197955';
 const USDT_ABI = ['function balanceOf(address) view returns (uint256)'];
 const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider);
@@ -25,6 +25,8 @@ function promiseWithTimeout(promise, ms, timeoutMessage = 'Operación excedió e
   return Promise.race([promise, timeout]);
 }
 
+// NOTA: La función registerDeposit se mantiene ya que su lógica es agnóstica de la cadena
+// y depende de los datos que le lleguen, que ahora solo serán de BSC.
 async function registerDeposit(wallet, amount, currency) {
     const session = await mongoose.startSession();
     try {
@@ -62,27 +64,20 @@ async function registerDeposit(wallet, amount, currency) {
 
 const getSweepableWallets = asyncHandler(async (req, res) => {
     console.log('[Treasury] Iniciando escaneo de wallets en tiempo real...');
-    const allWallets = await CryptoWallet.find().populate('user', '_id').lean();
-    const usdtTronContract = await tronWeb.contract().at(USDT_TRON_ADDRESS);
+    // MODIFICADO: Solo buscamos wallets BSC.
+    const allWallets = await CryptoWallet.find({ chain: 'BSC' }).populate('user', '_id').lean();
     
     const scanPromises = allWallets.map(async (wallet) => {
         let detectedBalances = [];
         if (!wallet.user) return;
         try {
-            if (wallet.chain === 'BSC') {
-                const usdtBalanceRaw = await promiseWithTimeout(usdtBscContract.balanceOf(wallet.address), 15000);
-                if (usdtBalanceRaw.gt(0)) {
-                    const usdtAmount = ethers.utils.formatUnits(usdtBalanceRaw, 18);
-                    detectedBalances.push({ currency: 'USDT_BSC', amount: usdtAmount });
-                    await registerDeposit(wallet, usdtAmount, 'USDT_BSC');
-                }
-            } else if (wallet.chain === 'TRON') {
-                const usdtBalanceRaw = await promiseWithTimeout(usdtTronContract.balanceOf(wallet.address).call(), 15000);
-                if (parseInt(usdtBalanceRaw.toString()) > 0) {
-                    const usdtAmount = ethers.utils.formatUnits(usdtBalanceRaw.toString(), 6);
-                    detectedBalances.push({ currency: 'USDT_TRON', amount: usdtAmount });
-                    await registerDeposit(wallet, usdtAmount, 'USDT_TRON');
-                }
+            // MODIFICADO: Se elimina el bloque 'if/else' y solo se ejecuta la lógica BSC.
+            const usdtBalanceRaw = await promiseWithTimeout(usdtBscContract.balanceOf(wallet.address), 15000);
+            if (usdtBalanceRaw.gt(0)) {
+                const usdtAmount = ethers.utils.formatUnits(usdtBalanceRaw, 18);
+                // MODIFICADO: La moneda ahora es simplemente USDT.
+                detectedBalances.push({ currency: 'USDT', amount: usdtAmount });
+                await registerDeposit(wallet, usdtAmount, 'USDT');
             }
         } catch(e) {
             console.error(`[Treasury] Error escaneando wallet ${wallet.address}: ${e.message}`);
@@ -113,21 +108,19 @@ const getSweepableWallets = asyncHandler(async (req, res) => {
 });
 
 const getHotWalletBalances = asyncHandler(async (req, res) => {
-    const hotWallet = transactionService.initializeHotWallet();
-    const usdtTronContract = await tronWeb.contract().at(USDT_TRON_ADDRESS);
+    // MODIFICADO: getCentralWallets ahora solo devuelve bscWallet.
+    const { bscWallet } = transactionService.getCentralWallets();
     
-    const [ bnbBalance, usdtBscBalance, trxBalance, usdtTronBalance ] = await Promise.all([
-        promiseWithTimeout(bscProvider.getBalance(hotWallet.bsc.address), 10000),
-        promiseWithTimeout(usdtBscContract.balanceOf(hotWallet.bsc.address), 10000),
-        promiseWithTimeout(tronWeb.trx.getBalance(hotWallet.tron.address), 10000),
-        promiseWithTimeout(usdtTronContract.balanceOf(hotWallet.tron.address).call(), 10000)
+    // MODIFICADO: Se eliminan las llamadas a la red Tron.
+    const [ bnbBalance, usdtBscBalance ] = await Promise.all([
+        promiseWithTimeout(bscProvider.getBalance(bscWallet.address), 10000),
+        promiseWithTimeout(usdtBscContract.balanceOf(bscWallet.address), 10000),
     ]);
     
     res.json({
         BNB: ethers.utils.formatEther(bnbBalance),
         USDT_BSC: ethers.utils.formatUnits(usdtBscBalance, 18),
-        TRX: tronWeb.fromSun(trxBalance),
-        USDT_TRON: ethers.utils.formatUnits(usdtTronBalance.toString(), 6)
+        // ELIMINADO: TRX y USDT_TRON
     });
 });
 
@@ -143,14 +136,12 @@ const sweepWallet = asyncHandler(async (req, res) => {
     const walletToSweep = await CryptoWallet.findOne({ address: fromAddress });
     if (!walletToSweep) return res.status(404).json({ message: `La wallet de depósito ${fromAddress} no se encontró.` });
     
-    let txHash;
-    if (currency === 'USDT_TRON') {
-        txHash = await transactionService.sweepUsdtOnTronFromDerivedWallet(walletToSweep.derivationIndex, destinationAddress);
-    } else if (currency === 'USDT_BSC') {
-        txHash = await transactionService.sweepUsdtOnBscFromDerivedWallet(walletToSweep.derivationIndex, destinationAddress);
-    } else {
-        return res.status(400).json({ message: `El barrido para ${currency} no está implementado.` });
+    // MODIFICADO: Se elimina la lógica para TRON, solo queda BSC.
+    if (currency !== 'USDT_BSC' && currency !== 'USDT') {
+       return res.status(400).json({ message: `El barrido para ${currency} no está implementado. Solo se soporta USDT_BSC.` });
     }
+
+    const txHash = await transactionService.sweepUsdtOnBscFromDerivedWallet(walletToSweep.derivationIndex, destinationAddress);
     
     await CryptoWallet.updateOne({ _id: walletToSweep._id }, { $set: { balances: [] } });
 

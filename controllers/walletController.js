@@ -1,309 +1,251 @@
-// backend/controllers/walletController.js (VERSIÓN v17.3 - CORRECCIÓN DE LOGGER)
+// backend/controllers/walletController.js (VERSIÓN MEGA FÁBRICA v2.0 - LÓGICA DE COMISIÓN CORREGIDA)
 
-const axios = require('axios');
-const crypto = require('crypto');
-const https = require('https-proxy-agent');
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
-const Tool = require('../models/toolModel');
+const Factory = require('../models/factoryModel');
 const Transaction = require('../models/transactionModel');
 const Setting = require('../models/settingsModel');
 const { createTransaction } = require('../utils/transactionLogger');
-const { distributeCommissions } = require('../services/commissionService');
+const { distributeReferralCommissions } = require('../services/commissionService');
+const { ethers } = require('ethers'); // Importado para validación de wallet
 
-const CRYPTO_CLOUD_API_URL = 'https://api.cryptocloud.pro/v2';
-const SHOP_ID = process.env.CRYPTO_CLOUD_SHOP_ID;
-const API_KEY = process.env.CRYPTO_CLOUD_API_KEY;
-const SECRET_KEY = process.env.CRYPTO_CLOUD_SECRET_KEY;
-
-const startMining = async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: 'Usuario no encontrado.' });
-    if (user.miningStatus !== 'IDLE') {
-      return res.status(400).json({ message: 'El ciclo de minado ya está activo o completado.' });
-    }
-    user.miningStatus = 'MINING';
-    user.lastMiningClaim = new Date();
-    await user.save();
-    const updatedUser = await User.findById(req.user.id).populate('activeTools.tool');
-    res.status(200).json({
-      message: '¡Ciclo de minado iniciado!',
-      user: updatedUser.toObject(),
-    });
-  } catch (error) {
-    console.error('Error en startMining:', error);
-    res.status(500).json({ message: 'Error interno al iniciar el ciclo de minado.' });
-  }
-};
-
-const createDirectDeposit = async (req, res) => {
-  const { toolId, currency } = req.body;
+/**
+ * @desc    Compra una o más fábricas utilizando el saldo USDT del usuario.
+ * @route   POST /api/wallet/purchase-factory
+ * @access  Private
+ */
+const purchaseFactoryWithBalance = async (req, res) => {
+  const { factoryId, quantity } = req.body;
   const userId = req.user.id;
-  if (!toolId || !currency) return res.status(400).json({ message: 'Se requiere la herramienta y la moneda.' });
-  try {
-    const tool = await Tool.findById(toolId);
-    if (!tool) return res.status(404).json({ message: 'Herramienta no encontrada.' });
-    const totalCostUSDT = tool.price;
-    const order_id = `purchase_${userId}_${toolId}_1_${Date.now()}`;
-    const payload = { shop_id: SHOP_ID, amount: totalCostUSDT.toFixed(2), currency, order_id };
-    const agent = process.env.HTTP_PROXY ? new https.Agent(process.env.HTTP_PROXY) : undefined;
-    const axiosOptions = { headers: { 'Authorization': `Token ${API_KEY}` }, httpsAgent: agent };
-    const response = await axios.post(`${CRYPTO_CLOUD_API_URL}/invoice/create`, payload, axiosOptions);
-    const { status, result } = response.data;
-    if (status !== 'success') return res.status(500).json({ message: 'Error al generar la dirección de pago.' });
-    res.json({ paymentAddress: result.pay_url, paymentAmount: result.amount, currency: result.currency });
-  } catch (error) {
-    console.error('Error detallado en createDirectDeposit:', { message: error.message, requestBody: req.body, responseData: error.response?.data });
-    res.status(500).json({ message: 'Error interno al generar la dirección de pago.' });
-  }
-};
 
-const createPurchaseInvoice = async (req, res) => {
-  const { toolId, quantity } = req.body;
-  const userId = req.user.id;
-  if (!toolId || !quantity || quantity <= 0) return res.status(400).json({ message: 'Datos de compra inválidos.' });
-  try {
-    const tool = await Tool.findById(toolId);
-    if (!tool) return res.status(404).json({ message: 'Herramienta no encontrada.' });
-    const totalCostUSDT = tool.price * quantity;
-    const order_id = `purchase_${userId}_${toolId}_${quantity}_${Date.now()}`;
-    const payload = { shop_id: SHOP_ID, amount: totalCostUSDT.toFixed(2), currency: 'USDT', order_id };
-    const agent = process.env.HTTP_PROXY ? new https.Agent(process.env.HTTP_PROXY) : undefined;
-    const axiosOptions = { headers: { 'Authorization': `Token ${API_KEY}` }, httpsAgent: agent };
-    const response = await axios.post(`${CRYPTO_CLOUD_API_URL}/invoice/create`, payload, axiosOptions);
-    res.json(response.data.result);
-  } catch (error) {
-    console.error('Error en createPurchaseInvoice:', error.response?.data || error.message);
-    res.status(500).json({ message: 'Error interno al generar la factura.' });
-  }
-};
-
-const createDepositInvoice = async (req, res) => {
-  const { amount } = req.body;
-  const userId = req.user.id;
-  if (!amount || typeof amount !== 'number' || amount <= 0) return res.status(400).json({ message: 'La cantidad debe ser un número positivo.' });
-  try {
-    const order_id = `deposit_${userId}_${Date.now()}`;
-    const payload = { shop_id: SHOP_ID, amount: parseFloat(amount).toFixed(2), currency: 'USDT', order_id };
-    const agent = process.env.HTTP_PROXY ? new https.Agent(process.env.HTTP_PROXY) : undefined;
-    const axiosOptions = { headers: { 'Authorization': `Token ${API_KEY}` }, httpsAgent: agent };
-    const response = await axios.post(`${CRYPTO_CLOUD_API_URL}/invoice/create`, payload, axiosOptions);
-    res.json(response.data.result);
-  } catch (error) {
-    console.error('Error al crear factura de depósito:', error.response?.data || error.message);
-    res.status(500).json({ message: 'Error al generar la dirección de depósito.' });
-  }
-};
-
-const purchaseWithBalance = async (req, res) => {
-  const { toolId, quantity } = req.body;
-  const userId = req.user.id;
-  if (!toolId || !quantity || quantity <= 0) {
+  if (!factoryId || !quantity || quantity <= 0) {
     return res.status(400).json({ message: 'Datos de compra inválidos.' });
   }
-  try {
-    const tool = await Tool.findById(toolId);
-    if (!tool) return res.status(404).json({ message: 'La herramienta no existe.' });
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: 'Usuario no encontrado.' });
-    const totalCost = tool.price * quantity;
-    if (user.balance.usdt < totalCost) {
-      return res.status(400).json({ message: 'Saldo USDT insuficiente.' });
-    }
-    const now = new Date();
-    user.balance.usdt -= totalCost;
-    const expiryDate = new Date(now.getTime() + tool.durationDays * 24 * 60 * 60 * 1000);
-    for (let i = 0; i < quantity; i++) {
-      user.activeTools.push({ tool: tool._id, purchaseDate: now, expiryDate: expiryDate });
-    }
-    await user.save();
-    await createTransaction(userId, 'purchase', totalCost, 'USDT', `Compra de ${quantity}x ${tool.name}`);
-    await distributeCommissions(user, totalCost);
-    const finalUpdatedUser = await User.findById(userId).populate('activeTools.tool');
-    res.status(200).json({ message: `¡Compra de ${quantity}x ${tool.name} exitosa!`, user: finalUpdatedUser.toObject() });
-  } catch (error) {
-    console.error('Error en purchaseWithBalance:', error);
-    res.status(500).json({ message: 'Error al procesar la compra.' });
-  }
-};
 
-const cryptoCloudWebhook = async (req, res) => {
-  const signature = req.headers['crypto-cloud-signature'];
-  const payload = req.body;
-  if (!signature) return res.status(400).send('Signature header missing');
-  try {
-    const sign = crypto.createHmac('sha256', SECRET_KEY).update(JSON.stringify(payload)).digest('hex');
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(sign))) {
-      return res.status(400).send('Invalid signature');
-    }
-    if (payload.status === 'paid') {
-      const order_id = payload.order_id;
-      const amountPaid = parseFloat(payload.amount_usdt);
-      if (order_id.startsWith('purchase_')) {
-        const [, userId, toolId, quantityStr] = order_id.split('_');
-        const quantity = parseInt(quantityStr, 10);
-        const user = await User.findById(userId);
-        const tool = await Tool.findById(toolId);
-        if (user && tool) {
-          const now = new Date();
-          const expiryDate = new Date(now.getTime() + tool.durationDays * 24 * 60 * 60 * 1000);
-          for (let i = 0; i < quantity; i++) {
-            user.activeTools.push({ tool: tool._id, purchaseDate: now, expiryDate: expiryDate });
-          }
-           user.lastMiningClaim = new Date();
-              user.miningStatus = 'IDLE';
-          await user.save();
-          await createTransaction(userId, 'purchase', amountPaid, 'USDT', `Compra de ${quantity}x ${tool.name} (Crypto)`);
-          await distributeCommissions(user, amountPaid);
-        }
-      } else if (order_id.startsWith('deposit_')) {
-        const [, userId] = order_id.split('_');
-        await User.findByIdAndUpdate(userId, { $inc: { 'balance.usdt': amountPaid } });
-        await createTransaction(userId, 'deposit', amountPaid, 'USDT', 'Depósito vía CryptoCloud');
-      }
-    }
-    res.status(200).send('Webhook processed');
-  } catch (error) {
-    console.error('Error procesando el webhook:', error);
-    res.status(500).send('Server error processing webhook');
-  }
-};
-
-const MINING_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
-
-const claim = async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: 'Usuario no encontrado.' });
-    const now = new Date();
-    const lastClaim = new Date(user.lastMiningClaim);
-    const timePassed = now.getTime() - lastClaim.getTime();
-    if (timePassed < MINING_CYCLE_DURATION_MS) {
-      return res.status(400).json({ message: 'El ciclo de minado de 24 horas aún no ha terminado.' });
-    }
-    const earnedNtx = user.effectiveMiningRate;
-    user.balance.ntx += earnedNtx;
-    user.miningStatus = 'IDLE';
-    await user.save();
-    await createTransaction(req.user.id, 'mining_claim', earnedNtx, 'NTX', 'Reclamo de ciclo de minería');
-    const updatedUser = await User.findById(req.user.id).populate('activeTools.tool');
-    res.json({
-      message: `¡Has reclamado ${earnedNtx.toFixed(2)} NTX!`,
-      user: updatedUser.toObject(),
-    });
-  } catch (error) {
-    console.error("Error al reclamar las ganancias:", error);
-    res.status(500).json({ message: "Error del servidor al procesar el reclamo." });
-  }
-};
-
-const swapNtxToUsdt = async (req, res) => {
-  const { ntxAmount } = req.body;
-  const userId = req.user.id;
-  const SWAP_RATE = 10000;
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
-    const settings = await Setting.findOne({ singleton: 'global_settings' }).session(session);
-    if (!settings) throw new Error('La configuración del sistema no está disponible.');
-    const numericNtxAmount = parseFloat(ntxAmount);
-    if (!numericNtxAmount || numericNtxAmount < settings.minimumSwap) {
-      return res.status(400).json({ message: `La cantidad mínima para intercambiar es ${settings.minimumSwap.toLocaleString()} NTX.` });
+
+    const factory = await Factory.findById(factoryId).lean(); // lean() para mejor rendimiento
+    if (!factory) {
+      throw new Error('La fábrica seleccionada no existe.');
     }
+
     const user = await User.findById(userId).session(session);
-    if (!user || user.balance.ntx < numericNtxAmount) {
-      return res.status(400).json({ message: 'Saldo NTX insuficiente.' });
+    if (!user) {
+      throw new Error('Usuario no encontrado.');
     }
-    const feeAmount = numericNtxAmount * (settings.swapFeePercent / 100);
-    const amountAfterFee = numericNtxAmount - feeAmount;
-    const usdtToReceive = amountAfterFee / SWAP_RATE;
-    user.balance.ntx -= numericNtxAmount;
-    user.balance.usdt += usdtToReceive;
-    
-    // [CORRECCIÓN] - Se pasa un objeto vacío para metadata y la sesión como último argumento.
+
+    const totalCost = factory.price * quantity;
+    if (user.balance.usdt < totalCost) {
+      return res.status(400).json({ message: 'Saldo USDT insuficiente para realizar la compra.' });
+    }
+
+    // LÓGICA DE COMISIÓN: Determinar si es la primera compra del usuario.
+    const isFirstPurchase = user.purchasedFactories.length === 0 && user.totalSpending === 0;
+
+    const now = new Date();
+    user.balance.usdt -= totalCost;
+    user.totalSpending += totalCost;
+
+    // Lógica para añadir las nuevas fábricas al usuario
+    for (let i = 0; i < quantity; i++) {
+        const expiryDate = new Date(now.getTime() + factory.durationDays * 24 * 60 * 60 * 1000);
+        user.purchasedFactories.push({ 
+            factory: factory._id, 
+            purchaseDate: now, 
+            expiryDate: expiryDate,
+            lastProductionTimestamp: now
+        });
+    }
+
+    await user.save({ session });
+
     await createTransaction(
         userId, 
-        'swap_ntx_to_usdt', 
-        numericNtxAmount, 
-        'NTX', 
-        `Intercambio a ${usdtToReceive.toFixed(4)} USDT`, 
-        {}, // Metadata vacío
+        'purchase', 
+        totalCost, 
+        'USDT', 
+        `Compra de ${quantity}x ${factory.name}`,
+        { factoryId: factory._id.toString(), quantity },
         session
     );
 
-    await user.save({ session });
+    // LÓGICA DE COMISIÓN: Llamar al servicio solo si es la primera compra.
+    if (isFirstPurchase) {
+      // No necesitamos esperar a que las comisiones terminen para responder al usuario.
+      // Lo ejecutamos en segundo plano.
+      distributeReferralCommissions(user, totalCost, session).catch(err => {
+        console.error(`[CommissionService] Error en la ejecución asíncrona post-compra para ${userId}:`, err);
+      });
+    }
+
     await session.commitTransaction();
-    const updatedUser = await User.findById(userId).populate('activeTools.tool');
-    res.status(200).json({ message: `¡Intercambio exitoso!`, user: updatedUser.toObject() });
+
+    // Enviamos el usuario actualizado con las nuevas fábricas.
+    const finalUpdatedUser = await User.findById(userId).populate('purchasedFactories.factory');
+    res.status(200).json({ 
+        message: `¡Compra de ${quantity}x ${factory.name} exitosa!`, 
+        user: finalUpdatedUser.toObject() 
+    });
+
   } catch (error) {
     await session.abortTransaction();
-    console.error('Error en swapNtxToUsdt:', error);
-    res.status(500).json({ message: error.message || 'Error interno al procesar el intercambio.' });
+    console.error('Error en purchaseFactoryWithBalance:', error);
+    res.status(500).json({ message: error.message || 'Error al procesar la compra.' });
   } finally {
     session.endSession();
   }
 };
 
+
+/**
+ * @desc    Reclama la producción acumulada de todas las fábricas.
+ * @route   POST /api/wallet/claim-all-production
+ * @access  Private
+ */
+const claimAllProduction = async (req, res) => {
+    const userId = req.user.id;
+    const session = await mongoose.startSession();
+    try {
+        session.startTransaction();
+        
+        const user = await User.findById(userId).populate('purchasedFactories.factory').session(session);
+        if (!user) throw new Error('Usuario no encontrado.');
+
+        const now = new Date();
+        let totalProductionToClaim = 0;
+
+        // Iteramos sobre las fábricas del usuario para calcular y resetear la producción.
+        user.purchasedFactories.forEach(pf => {
+            if (now > pf.expiryDate) return; // Si la fábrica ha expirado, no produce.
+
+            const secondsSinceLastUpdate = (now.getTime() - new Date(pf.lastProductionTimestamp).getTime()) / 1000;
+            const dailyProduction = pf.factory.dailyProduction || 0;
+            const productionPerSecond = dailyProduction / 86400; // 24 * 60 * 60
+            
+            const producedAmount = secondsSinceLastUpdate * productionPerSecond;
+            
+            // Se actualiza el balance de producción del usuario y se resetea el timestamp de la fábrica.
+            user.productionBalance.usdt += producedAmount;
+            pf.lastProductionTimestamp = now;
+        });
+        
+        totalProductionToClaim = user.productionBalance.usdt;
+
+        if (totalProductionToClaim < 0.0001) { // Umbral mínimo para evitar reclamos de polvo
+            return res.status(400).json({ message: 'No hay producción suficiente para reclamar.' });
+        }
+        
+        // Mover la producción al balance principal y resetear el balance de producción.
+        user.balance.usdt += totalProductionToClaim;
+        user.totalProductionClaimed += totalProductionToClaim;
+        user.productionBalance.usdt = 0;
+
+        await user.save({ session });
+        
+        await createTransaction(
+            userId, 
+            'production_claim', 
+            totalProductionToClaim, 
+            'USDT', 
+            `Reclamo de producción de todas las fábricas`,
+            {},
+            session
+        );
+
+        await session.commitTransaction();
+        
+        res.json({
+            message: `¡Has reclamado ${totalProductionToClaim.toFixed(4)} USDT de tus fábricas!`,
+            user: user.toObject(),
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        console.error("Error al reclamar la producción:", error);
+        res.status(500).json({ message: error.message || "Error del servidor al procesar el reclamo." });
+    } finally {
+        session.endSession();
+    }
+};
+
+/**
+ * @desc    Inicia una solicitud de retiro de saldo USDT.
+ * @route   POST /api/wallet/request-withdrawal
+ * @access  Private
+ */
 const requestWithdrawal = async (req, res) => {
   const { amount, walletAddress } = req.body;
   const userId = req.user.id;
-  let withdrawalTransaction;
+  const session = await mongoose.startSession();
+
   try {
-    const settings = await Setting.findOne({ singleton: 'global_settings' });
-    if (!settings) {
-      throw new Error('La configuración del sistema no está disponible.');
-    }
+    session.startTransaction();
+
+    const settings = await Setting.findOne({ singleton: 'global_settings' }).session(session);
+    if (!settings) throw new Error('La configuración del sistema no está disponible.');
+    
     const numericAmount = parseFloat(amount);
     if (!numericAmount || numericAmount < settings.minimumWithdrawal) {
       return res.status(400).json({ message: `El retiro mínimo es ${settings.minimumWithdrawal} USDT.` });
     }
-    if (!walletAddress) {
-      return res.status(400).json({ message: 'La dirección de billetera es requerida.' });
+    if (!walletAddress || !ethers.utils.isAddress(walletAddress)) {
+      return res.status(400).json({ message: 'La dirección de billetera BEP20 no es válida.' });
     }
-    const user = await User.findById(userId);
-    if (!user) {
-        return res.status(404).json({ message: 'Usuario no encontrado.' });
-    }
+    
+    const user = await User.findById(userId).session(session);
+    if (!user) throw new Error('Usuario no encontrado.');
     if (user.balance.usdt < numericAmount) {
       return res.status(400).json({ message: 'Saldo USDT insuficiente.' });
     }
+
+    user.balance.usdt -= numericAmount;
+    await user.save({ session });
+    
     const feeAmount = numericAmount * (settings.withdrawalFeePercent / 100);
     const netAmount = numericAmount - feeAmount;
-    withdrawalTransaction = new Transaction({
+
+    await Transaction.create([{
       user: userId,
       type: 'withdrawal',
       status: 'pending',
       amount: numericAmount,
       currency: 'USDT',
       description: `Solicitud de retiro a ${walletAddress}`,
-      metadata: { walletAddress, network: 'USDT-BEP20', feePercent: settings.withdrawalFeePercent.toString(), feeAmount: feeAmount.toFixed(4), netAmount: netAmount.toFixed(4) }
-    });
-    await withdrawalTransaction.save();
-    try {
-      user.balance.usdt -= numericAmount;
-      await user.save();
-    } catch (userSaveError) {
-      console.error('Error al guardar el usuario después de crear la transacción de retiro. Revirtiendo estado de transacción.', userSaveError);
-      withdrawalTransaction.status = 'failed';
-      withdrawalTransaction.metadata.set('error', 'Fallo al actualizar el saldo del usuario post-creación.');
-      await withdrawalTransaction.save();
-      throw new Error('No se pudo actualizar el saldo del usuario. La solicitud de retiro fue anulada.');
-    }
-    await user.populate('activeTools.tool');
+      metadata: { 
+        walletAddress, 
+        network: 'USDT-BEP20', 
+        feePercent: settings.withdrawalFeePercent.toString(), 
+        feeAmount: feeAmount.toFixed(4), 
+        netAmount: netAmount.toFixed(4) 
+      }
+    }], { session });
+
+    await session.commitTransaction();
+
+    const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
     res.status(201).json({ 
       message: 'Tu solicitud de retiro ha sido enviada con éxito y está pendiente de revisión.', 
-      user: user.toObject()
+      user: updatedUser.toObject()
     });
   } catch (error) {
-    console.error('Error catastrófico en requestWithdrawal:', error);
+    await session.abortTransaction();
+    console.error('Error en requestWithdrawal:', error);
     res.status(500).json({ message: error.message || 'Error interno al procesar la solicitud.' });
+  } finally {
+    session.endSession();
   }
 };
 
+/**
+ * @desc    Obtiene el historial de transacciones del usuario.
+ * @route   GET /api/wallet/history
+ * @access  Private
+ */
 const getHistory = async (req, res) => {
   try {
-    const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 }).limit(50);
+    const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 }).limit(100);
     res.json(transactions);
   } catch (error) {
     console.error('Error en getHistory:', error);
@@ -312,14 +254,8 @@ const getHistory = async (req, res) => {
 };
 
 module.exports = {
-  startMining,
-  createDirectDeposit,
-  createPurchaseInvoice,
-  purchaseWithBalance,
-  createDepositInvoice,
-  cryptoCloudWebhook,
-  claim,
-  swapNtxToUsdt,
+  purchaseFactoryWithBalance,
+  claimAllProduction,
   requestWithdrawal,
   getHistory,
 };

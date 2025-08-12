@@ -1,84 +1,94 @@
-// backend/services/commissionService.js (RECONSTRUCCIÓN FÉNIX v23.1 - COMISIONES FIJAS)
+// backend/services/commissionService.js (VERSIÓN MEGA FÁBRICA v1.0 - COMISIONES ACTUALIZADAS)
 
 const User = require('../models/userModel');
 const { createTransaction } = require('../utils/transactionLogger');
 const mongoose = require('mongoose');
 
 /**
- * Distribuye comisiones fijas de referido de forma atómica y eficiente.
+ * Distribuye comisiones fijas por referido a través de la cadena de hasta 3 niveles.
+ * Esta función es atómica para cada referente, pero se ejecuta de forma asíncrona para toda la cadena.
  *
- * JUSTIFICACIÓN: La versión anterior asumía porcentajes. Esta versión implementa la
- * regla de negocio correcta: comisiones FIJAS en USDT por nivel. La arquitectura
- * atómica y eficiente se mantiene.
- *
- * @param {mongoose.Types.ObjectId} buyerId - El ID del usuario que realizó su primera compra.
+ * @param {mongoose.Document} buyer - El documento del usuario que realizó la compra, para obtener su `_id` y `username`.
+ * @param {Number} purchaseAmount - El monto total de la compra que generó estas comisiones.
+ * @param {mongoose.ClientSession} [session] - Sesión opcional de Mongoose para operaciones transaccionales.
  */
-const distributeFixedCommissions = async (buyerId) => {
+const distributeReferralCommissions = async (buyer, purchaseAmount, session) => {
   try {
-    // 1. Definir las comisiones FIJAS por nivel. ESTA ES LA REGLA DE NEGOCIO CORRECTA.
+    // REGLA DE NEGOCIO ACTUALIZADA: Nuevas comisiones fijas de "Mega Fábrica".
     const FIXED_COMMISSIONS = {
-      1: 0.25, // 0.25 USDT para el Nivel 1
-      2: 0.15, // 0.15 USDT para el Nivel 2
-      3: 0.05, // 0.05 USDT para el Nivel 3
+      1: 0.30, // 0.30 USDT para el Nivel 1
+      2: 0.20, // 0.20 USDT para el Nivel 2
+      3: 0.10, // 0.10 USDT para el Nivel 3
     };
 
-    // 2. Obtener la cadena de referidos en UNA SOLA consulta eficiente.
-    const buyer = await User.findById(buyerId)
-      .select('username referredBy')
-      .populate({
-        path: 'referredBy',
-        select: 'username referredBy', // No necesitamos el balance aquí, optimización menor
-        populate: {
-          path: 'referredBy',
-          select: 'username referredBy',
-          populate: {
+    // La función ahora espera el documento del comprador ya populado si es posible,
+    // o lo busca si solo se pasa el ID. Por eficiencia, se recomienda pasar el documento populado.
+    let buyerWithReferrals;
+    if (buyer.populated('referredBy')) {
+        buyerWithReferrals = buyer;
+    } else {
+        // Fallback por si no viene populado: Se realiza UNA SOLA consulta eficiente.
+        buyerWithReferrals = await User.findById(buyer._id)
+          .select('username referredBy')
+          .populate({
             path: 'referredBy',
-            select: 'username',
-          },
-        },
-      })
-      .lean();
-
-    if (!buyer || !buyer.referredBy) {
-      // No hay referente, no hay nada que hacer.
+            select: 'username referredBy balance', // Se incluye balance para posibles validaciones futuras
+            populate: {
+              path: 'referredBy',
+              select: 'username referredBy balance',
+              populate: {
+                path: 'referredBy',
+                select: 'username balance',
+              },
+            },
+          })
+          .lean(); // .lean() para un objeto JS plano y más rápido.
+    }
+    
+    if (!buyerWithReferrals || !buyerWithReferrals.referredBy) {
+      // No hay referente, no hay comisiones que distribuir.
       return;
     }
     
+    // Construimos la lista de referentes de manera segura
     const referrers = [];
-    if (buyer.referredBy) { referrers.push({ user: buyer.referredBy, level: 1 }); }
+    if (buyerWithReferrals.referredBy) { referrers.push({ user: buyerWithReferrals.referredBy, level: 1 }); }
     if (referrers[0]?.user.referredBy) { referrers.push({ user: referrers[0].user.referredBy, level: 2 }); }
     if (referrers[1]?.user.referredBy) { referrers.push({ user: referrers[1].user.referredBy, level: 3 }); }
     
-    // 3. Preparar todas las operaciones de actualización y transacciones.
-    const updatePromises = referrers.map(ref => {
+    // Preparamos las operaciones de actualización y las transacciones en un array.
+    const operations = referrers.map(ref => {
       const commissionAmount = FIXED_COMMISSIONS[ref.level];
-      if (!commissionAmount) return null; // Seguridad por si algo sale mal
+      if (!commissionAmount) return null;
 
-      // La operación ATÓMICA Y SEGURA para actualizar el saldo
-      const updateUserPromise = User.findByIdAndUpdate(ref.user._id, {
+      const updatePromise = User.findByIdAndUpdate(ref.user._id, {
         $inc: { 'balance.usdt': commissionAmount }
-      });
+      }, { session }); // Se pasa la sesión si existe
       
-      const createTransactionPromise = createTransaction(
+      const transactionPromise = createTransaction(
         ref.user._id,
         'commission',
         commissionAmount,
         'USDT',
-        `Comisión Nivel ${ref.level} por compra de ${buyer.username}`
+        `Comisión Nivel ${ref.level} por compra de ${buyerWithReferrals.username}`,
+        { buyerId: buyerWithReferrals._id, purchaseAmount },
+        session // Se pasa la sesión si existe
       );
 
-      return Promise.all([updateUserPromise, createTransactionPromise]);
-    }).filter(Boolean); // Filtra cualquier nulo
+      return Promise.all([updatePromise, transactionPromise]);
+    }).filter(Boolean); // Filtra cualquier nulo si un nivel no es válido
 
-    // 4. Ejecutar todas las actualizaciones en paralelo.
-    await Promise.all(updatePromises);
-    console.log(`[CommissionService] Comisiones FIJAS distribuidas por la compra de ${buyer.username}.`);
+    // Ejecutamos todas las operaciones en paralelo.
+    await Promise.all(operations);
+    console.log(`[CommissionService] Comisiones distribuidas por la compra de ${buyerWithReferrals.username}.`);
 
   } catch (error) {
-    console.error(`[CommissionService] Fallo catastrófico al distribuir comisiones para la compra del usuario ${buyerId}:`, error);
+    // Si falla, se loguea el error pero no se detiene el flujo principal de la compra.
+    console.error(`[CommissionService] Fallo crítico al distribuir comisiones para la compra del usuario ${buyer._id}:`, error);
   }
 };
 
+// MODIFICADO: Se exporta la función con un nombre más genérico.
 module.exports = {
-  distributeFixedCommissions,
+  distributeReferralCommissions,
 };

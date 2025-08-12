@@ -1,10 +1,10 @@
-// RUTA: backend/services/transactionService.js (v37.0 - INCLUYE BARRIDO DE GAS BNB)
+// RUTA: backend/services/transactionService.js (v38.0 - SISTEMA TRON ELIMINADO)
 
 const { ethers } = require('ethers');
-const TronWeb = require('tronweb').default.TronWeb;
+// ELIMINADO: const TronWeb = require('tronweb').default.TronWeb;
 const PendingTx = require('../models/pendingTxModel');
 
-const USDT_TRON_ADDRESS = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+// ELIMINADO: const USDT_TRON_ADDRESS = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 const USDT_BSC_ADDRESS = '0x55d398326f99059fF775485246999027B3197955';
 const USDT_BSC_ABI = ['function transfer(address, uint256)', 'function balanceOf(address) view returns (uint256)'];
 
@@ -27,51 +27,13 @@ const getCentralWallets = () => {
     const bscNode = masterNode.derivePath(`m/44'/60'/0'/0/0`);
     const bscWallet = new ethers.Wallet(bscNode.privateKey, bscProvider);
 
-    const tronNode = masterNode.derivePath(`m/44'/195'/0'/0/0`);
-    const tronPrivateKey = tronNode.privateKey.slice(2); 
-    const tronAddress = TronWeb.address.fromPrivateKey(tronPrivateKey);
-
+    // MODIFICADO: Se elimina toda la lógica de derivación de TRON.
     return {
         bscWallet,
-        tronWallet: {
-            privateKey: tronPrivateKey, 
-            address: tronAddress
-        }
     };
 };
 
-const sweepUsdtOnTronFromDerivedWallet = async (derivationIndex, destinationAddress) => {
-  if (derivationIndex === undefined || !destinationAddress) throw new Error("Índice de derivación y dirección de destino son requeridos.");
-
-  const masterNode = ethers.utils.HDNode.fromMnemonic(process.env.MASTER_SEED_PHRASE);
-  const depositWalletNode = masterNode.derivePath(`m/44'/195'/${derivationIndex}'/0/0`);
-  
-  const depositWalletPrivateKey = depositWalletNode.privateKey.slice(2); 
-  const depositWalletAddress = TronWeb.address.fromPrivateKey(depositWalletPrivateKey);
-  
-  const tempTronWeb = new TronWeb({
-    fullHost: 'https://api.trongrid.io',
-    headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY },
-    privateKey: depositWalletPrivateKey
-  });
-
-  const usdtContract = await tempTronWeb.contract().at(USDT_TRON_ADDRESS);
-  const balance = await promiseWithTimeout(usdtContract.balanceOf(depositWalletAddress).call(), 10000);
-  const balanceBigNumber = ethers.BigNumber.from(balance.toString());
-
-  if (balanceBigNumber.isZero()) throw new Error(`La wallet ${depositWalletAddress} no tiene saldo de USDT para barrer.`);
-  
-  console.log(`[SweepService] Iniciando barrido de ${ethers.utils.formatUnits(balanceBigNumber, 6)} USDT desde ${depositWalletAddress} hacia ${destinationAddress}`);
-  
-  try {
-    const txHash = await promiseWithTimeout(usdtContract.transfer(destinationAddress, balanceBigNumber.toString()).send({ feeLimit: 150_000_000 }), 20000);
-    console.log(`[SweepService] Barrido de ${depositWalletAddress} iniciado. Hash: ${txHash}`);
-    return txHash;
-  } catch(error) {
-    console.error(`[SweepService] ERROR al barrer ${depositWalletAddress}:`, error);
-    throw new Error(`Fallo en la transacción de barrido. Detalles: ${error.message}`);
-  }
-};
+// ELIMINADO: Función sweepUsdtOnTronFromDerivedWallet
 
 const sweepUsdtOnBscFromDerivedWallet = async (derivationIndex, destinationAddress) => {
     if (derivationIndex === undefined || !destinationAddress) throw new Error("Índice de derivación y dirección de destino son requeridos.");
@@ -167,43 +129,12 @@ const sendBscGas = async (toAddress, amountInBnb) => {
     }
 };
 
-const sendTronTrx = async (toAddress, amountInTrx) => {
-    const { tronWallet } = getCentralWallets();
-    const localTronWeb = new TronWeb({
-        fullHost: 'https://api.trongrid.io',
-        headers: { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY },
-        privateKey: tronWallet.privateKey
-    });
+// ELIMINADO: Función sendTronTrx
 
-    console.log(`[GasDispenser] Enviando ${amountInTrx} TRX desde ${tronWallet.address} a ${toAddress}`);
-    try {
-        const amountInSun = localTronWeb.toSun(amountInTrx);
-        const tx = await localTronWeb.transactionBuilder.sendTrx(toAddress, amountInSun, tronWallet.address);
-        const signedTx = await localTronWeb.trx.sign(tx);
-        const receipt = await localTronWeb.trx.sendRawTransaction(signedTx);
-        
-        if (!receipt.result) {
-           throw new Error(`La transacción TRX falló con el mensaje: ${receipt.resMessage ? localTronWeb.toUtf8(receipt.resMessage) : 'Error desconocido'}`);
-        }
-
-        await PendingTx.create({
-            txHash: receipt.txid,
-            chain: 'TRON',
-            type: 'GAS_DISPATCH',
-            metadata: new Map([['to', toAddress], ['amount', amountInTrx.toString()]])
-        });
-        return receipt.txid;
-    } catch (error) {
-        console.error(`[GasDispenser] ERROR enviando TRX a ${toAddress}:`, error);
-        throw new Error(`Fallo al enviar TRX: ${error.message}`);
-    }
-};
-
+// MODIFICADO: Se eliminan las funciones de TRON de los exports.
 module.exports = {
-  sweepUsdtOnTronFromDerivedWallet,
   sweepUsdtOnBscFromDerivedWallet,
   sendBscGas,
-  sendTronTrx,
   getCentralWallets,
   sweepBnbFromDerivedWallet
 };

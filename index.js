@@ -1,4 +1,4 @@
-// backend/index.js (VERSIÓN FINAL v35.2 - MONITOREO UNIFICADO)
+// backend/index.js (VERSIÓN MEGA FÁBRICA v1.0)
 
 // --- IMPORTS Y CONFIGURACIÓN INICIAL ---
 const express = require('express');
@@ -11,14 +11,10 @@ const colors = require('colors');
 const connectDB = require('./config/db');
 const User = require('./models/userModel');
 
-// --- INICIO DE MODIFICACIÓN v35.2 ---
 // Se importa el servicio de monitoreo correcto y unificado.
 const { startMonitoring } = require('./services/transactionMonitor.js');
-// Se mantiene la importación del watcher antiguo, pero NO se usará.
-const { startWatcher } = require('./services/blockchainWatcherService');
-// --- FIN DE MODIFICACIÓN v35.2 ---
 
-console.log('[SISTEMA] Iniciando aplicación NEURO LINK...');
+console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA...'); // MODIFICADO: Rebranding
 dotenv.config();
 
 // --- VERIFICACIÓN DE VARIABLES DE ENTORNO ---
@@ -39,7 +35,7 @@ connectDB();
 
 // --- IMPORTACIÓN DE RUTAS DE LA API ---
 const authRoutes = require('./routes/authRoutes');
-const toolRoutes = require('./routes/toolRoutes');
+// ELIMINADO: const toolRoutes = require('./routes/toolRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const teamRoutes = require('./routes/teamRoutes');
@@ -75,7 +71,7 @@ app.use(express.json());
 // --- REGISTRO DE RUTAS DE LA API ---
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.use('/api/auth', authRoutes);
-app.use('/api/tools', toolRoutes);
+// ELIMINADO: app.use('/api/tools', toolRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/team', teamRoutes);
@@ -89,20 +85,21 @@ app.use('/api/users', userRoutes);
 // ================== LÓGICA DEL BOT DE TELEGRAM ===========================
 // =========================================================================
 
+// MODIFICADO: Mensaje de bienvenida para Mega Fábrica
 const WELCOME_MESSAGE = `
-🤖 ¡Bienvenido a Nice Bot!\n\n
-🔐 Tu acceso privilegiado al universo de la minería digital inteligente. Conecta con el sistema NTX y transforma tu actividad en recompensas exclusivas.\n
-📘 ¿Cómo funciona tu experiencia?\n
-🔹 1. Activa tu Minería Diaria\n\n
-⚒️ Inicia sesión cada 24 horas y comienza a generar NTX, el token neural de la red Nice Bot.\n
-🔹 2. Optimiza tu Potencia\n\n
-🛠️ Accede a la tienda y mejora tu rig con herramientas compradas en USDT / TRX / BNB. Velocidad y rentabilidad 🔥\n
-🔹 3. Expande tu Red Inteligente\n\n
-🧠 Invita aliados con tu enlace personal y multiplica tu influencia. Cada invitado te acerca al próximo nivel 💸\n
-🔹 4. Reclama y Evoluciona\n\n
-💎 Recupera tus NTX minados y potencia tus estrategias en el ecosistema tecnológico.\n
-🚀 ¿Listo para comenzar tu travesía digital con Nice Bot?
-🔘 Pulsa el botón inferior y libera el poder de la minería inteligente.`;
+🤖 ¡Bienvenido a Mega Fábrica!\n\n
+🏭 Tu centro de operaciones para la producción digital. Conecta, construye y genera ingresos pasivos en USDT.\n
+📘 ¿Cómo funciona tu imperio industrial?\n
+🔹 1. Adquiere tus Fábricas\n\n
+🏗️ Visita la tienda y compra diferentes tipos de fábricas usando USDT. Cada una tiene una producción y vida útil únicas.\n
+🔹 2. Producción Automática 24/7\n\n
+⚙️ Una vez compradas, tus fábricas empiezan a generar USDT automáticamente. ¡Incluso mientras duermes!\n
+🔹 3. Reclama tus Ganancias\n\n
+💰 Accede a tu panel y reclama la producción de tus fábricas para añadirla a tu saldo principal.\n
+🔹 4. Construye tu Red\n\n
+🤝 Invita a otros industriales con tu enlace personal. Recibirás una comisión en USDT por la primera compra de cada referido.\n
+🚀 ¿Listo para poner la primera piedra de tu imperio?
+🔘 Pulsa el botón inferior para abrir la aplicación y empezar a construir.`;
 
 bot.command('start', async (ctx) => {
     try {
@@ -139,15 +136,15 @@ bot.command('start', async (ctx) => {
         await referredUser.save();
         console.log(`[Bot /start] Perfil del usuario ${referredId} guardado/actualizado en la BD.`);
         
-        const imageUrl = 'https://i.postimg.cc/8PqYj4zR/nicebot.jpg';
+        const imageUrl = 'https://i.postimg.cc/8PqYj4zR/nicebot.jpg'; // Sugerencia: Actualizar esta imagen
         const webAppUrl = process.env.FRONTEND_URL;
         
         await ctx.replyWithPhoto(imageUrl, {
             caption: WELCOME_MESSAGE,
-            parse_mode: 'Markdown',
+            parse_mode: 'Markdown', // Cambiado a Markdown para mejor formato
             reply_markup: {
                 inline_keyboard: [
-                    [ Markup.button.webApp('🚀 Abrir App', webAppUrl) ]
+                    [ Markup.button.webApp('🏭 Abrir App', webAppUrl) ]
                 ]
             }
         });
@@ -172,10 +169,8 @@ const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, async () => {
     console.log(`[SERVIDOR] 🚀 Servidor corriendo en puerto ${PORT}`.yellow.bold);
   
-    // --- INICIO DE MODIFICACIÓN v35.2 ---
-    // startWatcher(); // <-- Se comenta el watcher antiguo y defectuoso.
-    startMonitoring(); // <-- Se inicia el monitor nuevo, unificado y correcto.
-    // --- FIN DE MODIFICACIÓN v35.2 ---
+    // Inicia el monitor de transacciones unificado.
+    startMonitoring();
 
     try {
         const botInfo = await bot.telegram.getMe();
