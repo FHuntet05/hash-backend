@@ -1,4 +1,4 @@
-// backend/index.js (VERSIÓN MEGA FÁBRICA v1.0)
+// backend/index.js (VERSIÓN MEGA FÁBRICA v1.1 - CORS SIMPLIFICADO)
 
 // --- IMPORTS Y CONFIGURACIÓN INICIAL ---
 const express = require('express');
@@ -10,17 +10,16 @@ const dotenv = require('dotenv');
 const colors = require('colors');
 const connectDB = require('./config/db');
 const User = require('./models/userModel');
-
-// Se importa el servicio de monitoreo correcto y unificado.
 const { startMonitoring } = require('./services/transactionMonitor.js');
 
-console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA...'); // MODIFICADO: Rebranding
+console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA...');
 dotenv.config();
 
 // --- VERIFICACIÓN DE VARIABLES DE ENTORNO ---
 function checkEnvVariables() {
     console.log('[SISTEMA] Verificando variables de entorno críticas...');
-    const requiredVars = ['MONGO_URI', 'JWT_SECRET', 'TELEGRAM_BOT_TOKEN', 'FRONTEND_URL', 'ADMIN_URL', 'BACKEND_URL', 'BSCSCAN_API_KEY', 'MASTER_SEED_PHRASE'];
+    // MODIFICADO: Se elimina ADMIN_URL de la lista de requeridos.
+    const requiredVars = ['MONGO_URI', 'JWT_SECRET', 'TELEGRAM_BOT_TOKEN', 'FRONTEND_URL', 'BACKEND_URL', 'BSCSCAN_API_KEY', 'MASTER_SEED_PHRASE'];
     const missingVars = requiredVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
         console.error(`!! ERROR FATAL: FALTAN VARIABLES DE ENTORNO: ${missingVars.join(', ')}`.red.bold);
@@ -35,7 +34,6 @@ connectDB();
 
 // --- IMPORTACIÓN DE RUTAS DE LA API ---
 const authRoutes = require('./routes/authRoutes');
-// ELIMINADO: const toolRoutes = require('./routes/toolRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const teamRoutes = require('./routes/teamRoutes');
@@ -51,7 +49,8 @@ const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 app.disable('etag');
-const whitelist = [process.env.FRONTEND_URL, process.env.ADMIN_URL];
+// MODIFICADO: Ya que el admin y el frontend usan la misma URL, solo necesitamos una en la whitelist.
+const whitelist = [process.env.FRONTEND_URL];
 const corsOptions = {
     origin: (origin, callback) => {
         if (!origin || whitelist.indexOf(origin) !== -1) {
@@ -66,12 +65,10 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json());
-// app.use(morgan('dev'));
 
 // --- REGISTRO DE RUTAS DE LA API ---
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.use('/api/auth', authRoutes);
-// ELIMINADO: app.use('/api/tools', toolRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/team', teamRoutes);
@@ -85,7 +82,6 @@ app.use('/api/users', userRoutes);
 // ================== LÓGICA DEL BOT DE TELEGRAM ===========================
 // =========================================================================
 
-// MODIFICADO: Mensaje de bienvenida para Mega Fábrica
 const WELCOME_MESSAGE = `
 🤖 ¡Bienvenido a Mega Fábrica!\n\n
 🏭 Tu centro de operaciones para la producción digital. Conecta, construye y genera ingresos pasivos en USDT.\n
@@ -136,12 +132,12 @@ bot.command('start', async (ctx) => {
         await referredUser.save();
         console.log(`[Bot /start] Perfil del usuario ${referredId} guardado/actualizado en la BD.`);
         
-        const imageUrl = 'https://i.postimg.cc/8PqYj4zR/nicebot.jpg'; // Sugerencia: Actualizar esta imagen
+        const imageUrl = 'https://i.postimg.cc/8PqYj4zR/nicebot.jpg';
         const webAppUrl = process.env.FRONTEND_URL;
         
         await ctx.replyWithPhoto(imageUrl, {
             caption: WELCOME_MESSAGE,
-            parse_mode: 'Markdown', // Cambiado a Markdown para mejor formato
+            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
                     [ Markup.button.webApp('🏭 Abrir App', webAppUrl) ]
@@ -169,7 +165,6 @@ const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, async () => {
     console.log(`[SERVIDOR] 🚀 Servidor corriendo en puerto ${PORT}`.yellow.bold);
   
-    // Inicia el monitor de transacciones unificado.
     startMonitoring();
 
     try {
