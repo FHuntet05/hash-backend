@@ -1,4 +1,4 @@
-// backend/controllers/walletController.js (VERSIÓN MEGA FÁBRICA v2.0 - LÓGICA DE COMISIÓN CORREGIDA)
+// RUTA: backend/controllers/walletController.js (VERSIÓN MEGA FÁBRICA FINAL CON RECLAMO INDIVIDUAL)
 
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
@@ -7,13 +7,11 @@ const Transaction = require('../models/transactionModel');
 const Setting = require('../models/settingsModel');
 const { createTransaction } = require('../utils/transactionLogger');
 const { distributeReferralCommissions } = require('../services/commissionService');
-const { ethers } = require('ethers'); // Importado para validación de wallet
+const { ethers } = require('ethers');
 
-/**
- * @desc    Compra una o más fábricas utilizando el saldo USDT del usuario.
- * @route   POST /api/wallet/purchase-factory
- * @access  Private
- */
+// CONSTANTE CLAVE: Duración del ciclo de producción de la fábrica.
+const FACTORY_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
+
 const purchaseFactoryWithBalance = async (req, res) => {
   const { factoryId, quantity } = req.body;
   const userId = req.user.id;
@@ -26,7 +24,7 @@ const purchaseFactoryWithBalance = async (req, res) => {
   try {
     session.startTransaction();
 
-    const factory = await Factory.findById(factoryId).lean(); // lean() para mejor rendimiento
+    const factory = await Factory.findById(factoryId).lean();
     if (!factory) {
       throw new Error('La fábrica seleccionada no existe.');
     }
@@ -41,21 +39,19 @@ const purchaseFactoryWithBalance = async (req, res) => {
       return res.status(400).json({ message: 'Saldo USDT insuficiente para realizar la compra.' });
     }
 
-    // LÓGICA DE COMISIÓN: Determinar si es la primera compra del usuario.
     const isFirstPurchase = user.purchasedFactories.length === 0 && user.totalSpending === 0;
 
     const now = new Date();
     user.balance.usdt -= totalCost;
     user.totalSpending += totalCost;
 
-    // Lógica para añadir las nuevas fábricas al usuario
     for (let i = 0; i < quantity; i++) {
         const expiryDate = new Date(now.getTime() + factory.durationDays * 24 * 60 * 60 * 1000);
         user.purchasedFactories.push({ 
             factory: factory._id, 
             purchaseDate: now, 
             expiryDate: expiryDate,
-            lastProductionTimestamp: now
+            lastClaim: now
         });
     }
 
@@ -71,10 +67,7 @@ const purchaseFactoryWithBalance = async (req, res) => {
         session
     );
 
-    // LÓGICA DE COMISIÓN: Llamar al servicio solo si es la primera compra.
     if (isFirstPurchase) {
-      // No necesitamos esperar a que las comisiones terminen para responder al usuario.
-      // Lo ejecutamos en segundo plano.
       distributeReferralCommissions(user, totalCost, session).catch(err => {
         console.error(`[CommissionService] Error en la ejecución asíncrona post-compra para ${userId}:`, err);
       });
@@ -82,7 +75,6 @@ const purchaseFactoryWithBalance = async (req, res) => {
 
     await session.commitTransaction();
 
-    // Enviamos el usuario actualizado con las nuevas fábricas.
     const finalUpdatedUser = await User.findById(userId).populate('purchasedFactories.factory');
     res.status(200).json({ 
         message: `¡Compra de ${quantity}x ${factory.name} exitosa!`, 
@@ -98,14 +90,14 @@ const purchaseFactoryWithBalance = async (req, res) => {
   }
 };
 
-
-/**
- * @desc    Reclama la producción acumulada de todas las fábricas.
- * @route   POST /api/wallet/claim-all-production
- * @access  Private
- */
-const claimAllProduction = async (req, res) => {
+const claimFactoryProduction = async (req, res) => {
+    const { purchasedFactoryId } = req.body;
     const userId = req.user.id;
+
+    if (!purchasedFactoryId) {
+        return res.status(400).json({ message: 'Se requiere el ID de la fábrica comprada.' });
+    }
+    
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
@@ -113,68 +105,54 @@ const claimAllProduction = async (req, res) => {
         const user = await User.findById(userId).populate('purchasedFactories.factory').session(session);
         if (!user) throw new Error('Usuario no encontrado.');
 
-        const now = new Date();
-        let totalProductionToClaim = 0;
-
-        // Iteramos sobre las fábricas del usuario para calcular y resetear la producción.
-        user.purchasedFactories.forEach(pf => {
-            if (now > pf.expiryDate) return; // Si la fábrica ha expirado, no produce.
-
-            const secondsSinceLastUpdate = (now.getTime() - new Date(pf.lastProductionTimestamp).getTime()) / 1000;
-            const dailyProduction = pf.factory.dailyProduction || 0;
-            const productionPerSecond = dailyProduction / 86400; // 24 * 60 * 60
-            
-            const producedAmount = secondsSinceLastUpdate * productionPerSecond;
-            
-            // Se actualiza el balance de producción del usuario y se resetea el timestamp de la fábrica.
-            user.productionBalance.usdt += producedAmount;
-            pf.lastProductionTimestamp = now;
-        });
-        
-        totalProductionToClaim = user.productionBalance.usdt;
-
-        if (totalProductionToClaim < 0.0001) { // Umbral mínimo para evitar reclamos de polvo
-            return res.status(400).json({ message: 'No hay producción suficiente para reclamar.' });
+        const factoryInstance = user.purchasedFactories.id(purchasedFactoryId);
+        if (!factoryInstance) {
+            throw new Error('La fábrica especificada no pertenece a este usuario o no existe.');
         }
+
+        const now = new Date();
+        const lastClaim = new Date(factoryInstance.lastClaim);
+        const timePassedMs = now.getTime() - lastClaim.getTime();
+
+        if (timePassedMs < FACTORY_CYCLE_DURATION_MS) {
+            return res.status(400).json({ message: 'El ciclo de producción de 24 horas aún no ha terminado.' });
+        }
+
+        const dailyProduction = factoryInstance.factory.dailyProduction;
         
-        // Mover la producción al balance principal y resetear el balance de producción.
-        user.balance.usdt += totalProductionToClaim;
-        user.totalProductionClaimed += totalProductionToClaim;
-        user.productionBalance.usdt = 0;
+        user.balance.usdt += dailyProduction;
+        user.totalProductionClaimed += dailyProduction;
+        factoryInstance.lastClaim = now;
 
         await user.save({ session });
         
         await createTransaction(
             userId, 
             'production_claim', 
-            totalProductionToClaim, 
+            dailyProduction, 
             'USDT', 
-            `Reclamo de producción de todas las fábricas`,
-            {},
+            `Reclamo de producción de ${factoryInstance.factory.name}`,
+            { purchasedFactoryId },
             session
         );
 
         await session.commitTransaction();
         
+        // Devolvemos el usuario actualizado para que el frontend pueda refrescar el estado.
         res.json({
-            message: `¡Has reclamado ${totalProductionToClaim.toFixed(4)} USDT de tus fábricas!`,
+            message: `¡Has reclamado ${dailyProduction.toFixed(2)} USDT de tu ${factoryInstance.factory.name}!`,
             user: user.toObject(),
         });
 
     } catch (error) {
         await session.abortTransaction();
-        console.error("Error al reclamar la producción:", error);
+        console.error("Error al reclamar la producción de la fábrica:", error);
         res.status(500).json({ message: error.message || "Error del servidor al procesar el reclamo." });
     } finally {
         session.endSession();
     }
 };
 
-/**
- * @desc    Inicia una solicitud de retiro de saldo USDT.
- * @route   POST /api/wallet/request-withdrawal
- * @access  Private
- */
 const requestWithdrawal = async (req, res) => {
   const { amount, walletAddress } = req.body;
   const userId = req.user.id;
@@ -238,11 +216,6 @@ const requestWithdrawal = async (req, res) => {
   }
 };
 
-/**
- * @desc    Obtiene el historial de transacciones del usuario.
- * @route   GET /api/wallet/history
- * @access  Private
- */
 const getHistory = async (req, res) => {
   try {
     const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 }).limit(100);
@@ -255,7 +228,7 @@ const getHistory = async (req, res) => {
 
 module.exports = {
   purchaseFactoryWithBalance,
-  claimAllProduction,
+  claimFactoryProduction,
   requestWithdrawal,
   getHistory,
 };
