@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/adminController.js (v43.0 - CON GESTIÓN DE ADMINS)
+// RUTA: backend/controllers/adminController.js (v44.0 - updateUser EXPANDIDO)
 
 const User = require('../models/userModel');
 const Transaction = require('../models/transactionModel');
@@ -57,7 +57,37 @@ const checkAndSendGasAlert = async (currentBnbBalance) => { try { const settings
 const getUserDetails = asyncHandler(async (req, res) => { const { id } = req.params; if (!mongoose.Types.ObjectId.isValid(id)) { res.status(400); throw new Error('ID de usuario no válido.'); } const page = parseInt(req.query.page) || 1; const limit = 10; const transactionsFilter = { user: id }; const totalTransactions = await Transaction.countDocuments(transactionsFilter); const [user, referrals, cryptoWallets, transactions] = await Promise.all([ User.findById(id).select('-password').lean(), User.find({ referredBy: id }).select('username fullName telegramId photoFileId createdAt').lean(), CryptoWallet.find({ user: id }).lean(), Transaction.find(transactionsFilter).sort({ createdAt: -1 }).limit(limit).skip(limit * (page - 1)).lean() ]); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } const [userPhotoUrl, referralsWithPhoto] = await Promise.all([ getTemporaryPhotoUrl(user.photoFileId), Promise.all(referrals.map(async (ref) => ({ ...ref, photoUrl: await getTemporaryPhotoUrl(ref.photoFileId) || PLACEHOLDER_AVATAR_URL }))) ]); res.json({ user: { ...user, photoUrl: userPhotoUrl || PLACEHOLDER_AVATAR_URL }, referrals: referralsWithPhoto, cryptoWallets, transactions: { items: transactions, page, totalPages: Math.ceil(totalTransactions / limit), totalItems: totalTransactions } }); });
 const adjustUserBalance = asyncHandler(async (req, res) => { const { id } = req.params; const { type, currency, amount, reason } = req.body; if (!['admin_credit', 'admin_debit'].includes(type) || !['USDT'].includes(currency) || !amount || !reason) { res.status(400); throw new Error("Parámetros inválidos. Moneda debe ser USDT."); } const session = await mongoose.startSession(); try { session.startTransaction(); const currencyKey = currency.toLowerCase(); let updateOperation = {}; if (type === 'admin_credit') { updateOperation = { $inc: { [`balance.${currencyKey}`]: amount, totalRecharge: amount } }; } else { const userCheck = await User.findById(id).select(`balance.${currencyKey}`).session(session); if (!userCheck || (userCheck.balance[currencyKey] || 0) < amount) { throw new Error('Saldo insuficiente para realizar el débito.'); } updateOperation = { $inc: { [`balance.${currencyKey}`]: -amount } }; } const user = await User.findByIdAndUpdate(id, updateOperation, { new: true, session }); if (!user) throw new Error('Usuario no encontrado.'); const transaction = new Transaction({ user: id, type, currency, amount, status: 'completed', description: reason, metadata: { adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(200).json({ message: 'Saldo ajustado exitosamente.', user }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
 const getAllUsers = asyncHandler(async (req, res) => { const pageSize = 10; const page = Number(req.query.page) || 1; const filter = req.query.search ? { $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] } : {}; const count = await User.countDocuments(filter); const users = await User.find(filter).select('username telegramId role status createdAt balance.usdt photoFileId').sort({ createdAt: -1 }).limit(pageSize).skip(pageSize * (page - 1)).lean(); const usersWithPhotoUrl = await Promise.all(users.map(async (user) => ({ ...user, photoUrl: await getTemporaryPhotoUrl(user.photoFileId) || PLACEHOLDER_AVATAR_URL }))); res.json({ users: usersWithPhotoUrl, page, pages: Math.ceil(count / pageSize), totalUsers: count }); });
-const updateUser = asyncHandler(async (req, res) => { const { role, balanceUsdt } = req.body; const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } user.role = role ?? user.role; user.balance.usdt = balanceUsdt ?? user.balance.usdt; const updatedUser = await user.save(); res.json(updatedUser); });
+
+// --- INICIO DE LA MODIFICACIÓN CRÍTICA ---
+const updateUser = asyncHandler(async (req, res) => {
+    // Se extraen los nuevos campos del body de la petición
+    const { username, password, balanceUsdt } = req.body;
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+        res.status(404);
+        throw new Error('Usuario no encontrado.');
+    }
+
+    // Se actualizan los campos solo si se proporcionan en la petición
+    user.username = username ?? user.username;
+    user.balance.usdt = balanceUsdt ?? user.balance.usdt;
+
+    // Si se proporciona una nueva contraseña, se actualiza.
+    // El hook pre-save de userModel se encargará de hashearla automáticamente.
+    if (password) {
+        user.password = password;
+        // Si el usuario es un admin, se le obliga a cambiar la contraseña si un super admin la resetea
+        if (user.role === 'admin' && req.user.telegramId === process.env.ADMIN_TELEGRAM_ID) {
+            user.passwordResetRequired = true;
+        }
+    }
+    
+    const updatedUser = await user.save();
+    res.json(updatedUser);
+});
+// --- FIN DE LA MODIFICACIÓN CRÍTICA ---
+
 const setUserStatus = asyncHandler(async (req, res) => { const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user._id.equals(req.user._id)) { res.status(400); throw new Error('No puedes cambiar tu propio estado.'); } user.status = req.body.status; const updatedUser = await user.save(); res.json(updatedUser); });
 const getAllTransactions = asyncHandler(async (req, res) => { const pageSize = 15; const page = Number(req.query.page) || 1; let filter = {}; if (req.query.type) { filter.type = req.query.type; } if (req.query.search) { const usersFound = await User.find({ $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] }).select('_id'); filter.user = { $in: usersFound.map(user => user._id) }; } const count = await Transaction.countDocuments(filter); const transactions = await Transaction.find(filter).sort({ createdAt: -1 }).populate('user', 'username telegramId').limit(pageSize).skip(pageSize * (page - 1)).lean(); res.json({ transactions, page, pages: Math.ceil(count / pageSize), totalTransactions: count }); });
 const createManualTransaction = asyncHandler(async (req, res) => { const { userId, type, currency, amount, reason } = req.body; const session = await mongoose.startSession(); try { session.startTransaction(); const user = await User.findById(userId).session(session); if (!user) throw new Error('Usuario no encontrado.'); const currencyKey = currency.toLowerCase(); const originalBalance = user.balance[currencyKey] || 0; if (type === 'admin_credit') { user.balance[currencyKey] += amount; } else { if (originalBalance < amount) throw new Error('Saldo insuficiente para realizar el débito.'); user.balance[currencyKey] -= amount; } const updatedUser = await user.save({ session }); const transaction = new Transaction({ user: userId, type, currency, amount, description: reason, status: 'completed', metadata: { adminId: req.user._id.toString(), adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(201).json({ message: 'Transacción manual creada.', user: updatedUser.toObject() }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
@@ -79,94 +109,9 @@ const dispatchGas = asyncHandler(async (req, res) => { const { chain, targets } 
 const sendBroadcastNotification = asyncHandler(async (req, res) => { const { message, target, imageUrl, buttons } = req.body; if (!message || !target) { res.status(400); throw new Error("Mensaje y público objetivo son requeridos."); } let usersToNotify = []; if (target.type === 'all') { usersToNotify = await User.find({ status: 'active' }).select('telegramId').lean(); } else if (target.type === 'id' && target.value) { const user = await User.findOne({ telegramId: target.value }).select('telegramId').lean(); if (user) usersToNotify.push(user); } if (usersToNotify.length === 0) { return res.json({ message: "No se encontraron usuarios para notificar." }); } res.status(202).json({ message: `Enviando notificación a ${usersToNotify.length} usuarios. Este proceso puede tardar.` }); (async () => { let successCount = 0; for (const user of usersToNotify) { const result = await sendTelegramMessage(user.telegramId, message, { imageUrl, buttons }); if(result.success) successCount++; await new Promise(resolve => setTimeout(resolve, 100)); } console.log(`[Broadcast] Notificación completada. ${successCount}/${usersToNotify.length} envíos exitosos.`); })(); });
 const cancelTransaction = asyncHandler(async (req, res) => { const { txHash } = req.body; if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); } res.status(501).json({ message: 'Funcionalidad no implementada todavía.', requestedTxHash: txHash }); });
 const speedUpTransaction = asyncHandler(async (req, res) => { const { txHash } = req.body; if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); } res.status(501).json({ message: 'Funcionalidad no implementada todavía.', requestedTxHash: txHash }); });
-
-const promoteUserToAdmin = asyncHandler(async (req, res) => {
-    const { userId, temporaryPassword } = req.body;
-
-    // Solo el Super Admin puede promover a otros.
-    if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) {
-        res.status(403);
-        throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.');
-    }
-
-    if (!userId || !temporaryPassword) {
-        res.status(400);
-        throw new Error('Se requiere ID de usuario y contraseña temporal.');
-    }
-
-    const userToPromote = await User.findById(userId);
-
-    if (!userToPromote) {
-        res.status(404);
-        throw new Error('Usuario a promover no encontrado.');
-    }
-
-    userToPromote.role = 'admin';
-    userToPromote.password = temporaryPassword; // El hook pre-save se encargará de hashear
-    userToPromote.passwordResetRequired = true; // Forzar cambio en el primer login
-
-    await userToPromote.save();
-
-    res.json({ message: `El usuario ${userToPromote.username} ha sido promovido a Administrador.` });
-});
-
-const resetAdminPassword = asyncHandler(async (req, res) => {
-    const { userId, newTemporaryPassword } = req.body;
-
-    if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) {
-        res.status(403);
-        throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.');
-    }
-    
-    if (!userId || !newTemporaryPassword) {
-        res.status(400);
-        throw new Error('Se requiere ID de usuario y nueva contraseña temporal.');
-    }
-
-    const adminToReset = await User.findById(userId).select('+password');
-
-    if (!adminToReset || adminToReset.role !== 'admin') {
-        res.status(404);
-        throw new Error('Administrador no encontrado.');
-    }
-
-    adminToReset.password = newTemporaryPassword;
-    adminToReset.passwordResetRequired = true;
-
-    await adminToReset.save();
-
-    res.json({ message: `La contraseña del administrador ${adminToReset.username} ha sido restablecida.` });
-});
-
-const demoteAdminToUser = asyncHandler(async (req, res) => {
-    const { userId } = req.body;
-
-    if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) {
-        res.status(403);
-        throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.');
-    }
-
-    const adminToDemote = await User.findById(userId);
-
-    if (!adminToDemote || adminToDemote.role !== 'admin') {
-        res.status(404);
-        throw new Error('Administrador no encontrado.');
-    }
-
-    // No se puede degradar al Super Admin
-    if (adminToDemote.telegramId === process.env.ADMIN_TELEGRAM_ID) {
-        res.status(400);
-        throw new Error('No se puede degradar al Super Administrador.');
-    }
-
-    adminToDemote.role = 'user';
-    adminToDemote.password = undefined; // Elimina la contraseña de panel
-    adminToDemote.passwordResetRequired = false;
-
-    await adminToDemote.save();
-    
-    res.json({ message: `El administrador ${adminToDemote.username} ha sido degradado a usuario.` });
-});
+const promoteUserToAdmin = asyncHandler(async (req, res) => { const { userId, temporaryPassword } = req.body; if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) { res.status(403); throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.'); } if (!userId || !temporaryPassword) { res.status(400); throw new Error('Se requiere ID de usuario y contraseña temporal.'); } const userToPromote = await User.findById(userId); if (!userToPromote) { res.status(404); throw new Error('Usuario a promover no encontrado.'); } userToPromote.role = 'admin'; userToPromote.password = temporaryPassword; userToPromote.passwordResetRequired = true; await userToPromote.save(); res.json({ message: `El usuario ${userToPromote.username} ha sido promovido a Administrador.` }); });
+const resetAdminPassword = asyncHandler(async (req, res) => { const { userId, newTemporaryPassword } = req.body; if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) { res.status(403); throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.'); } if (!userId || !newTemporaryPassword) { res.status(400); throw new Error('Se requiere ID de usuario y nueva contraseña temporal.'); } const adminToReset = await User.findById(userId).select('+password'); if (!adminToReset || adminToReset.role !== 'admin') { res.status(404); throw new Error('Administrador no encontrado.'); } adminToReset.password = newTemporaryPassword; adminToReset.passwordResetRequired = true; await adminToReset.save(); res.json({ message: `La contraseña del administrador ${adminToReset.username} ha sido restablecida.` }); });
+const demoteAdminToUser = asyncHandler(async (req, res) => { const { userId } = req.body; if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) { res.status(403); throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.'); } const adminToDemote = await User.findById(userId); if (!adminToDemote || adminToDemote.role !== 'admin') { res.status(404); throw new Error('Administrador no encontrado.'); } if (adminToDemote.telegramId === process.env.ADMIN_TELEGRAM_ID) { res.status(400); throw new Error('No se puede degradar al Super Administrador.'); } adminToDemote.role = 'user'; adminToDemote.password = undefined; adminToDemote.passwordResetRequired = false; await adminToDemote.save(); res.json({ message: `El administrador ${adminToDemote.username} ha sido degradado a usuario.` }); });
 
 module.exports = {
   getPendingWithdrawals,
