@@ -1,4 +1,4 @@
-// backend/middleware/authMiddleware.js (VERSIÓN v16.0 - ESTABLE)
+// backend/middleware/authMiddleware.js (VERSIÓN v17.0 - CON SUPER ADMIN)
 
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
@@ -45,21 +45,35 @@ const protect = asyncHandler(async (req, res, next) => {
   }
 });
 
-/**
- * CORRECCIÓN v16.0: Se reemplazó 'throw new Error' con 'res.json'
- * para asegurar que se envía una respuesta al cliente en caso de no ser administrador,
- * evitando así que la solicitud se quede colgada indefinidamente.
- */
 const isAdmin = (req, res, next) => {
     if (req.user && req.user.role === 'admin') {
         next();
     } else {
-        // CORRECCIÓN: Enviar una respuesta JSON en lugar de lanzar un error.
         res.status(403).json({ message: 'Acceso denegado. Se requieren permisos de administrador.' });
+    }
+};
+
+/**
+ * Middleware para verificar si el usuario es el Super Administrador.
+ * Debe usarse SIEMPRE después de 'protect' e 'isAdmin'.
+ */
+const isSuperAdmin = (req, res, next) => {
+    // Verificamos que la variable de entorno exista para evitar fallos de seguridad.
+    if (!process.env.ADMIN_TELEGRAM_ID) {
+        console.error('CRITICAL SECURITY ALERT: ADMIN_TELEGRAM_ID is not set.'.red.bold);
+        return res.status(500).json({ message: 'Error de configuración del servidor.' });
+    }
+
+    // Comparamos el telegramId del usuario autenticado con la variable de entorno.
+    if (req.user && req.user.telegramId === process.env.ADMIN_TELEGRAM_ID) {
+        next(); // El usuario es el Super Admin, puede continuar.
+    } else {
+        res.status(403).json({ message: 'Acceso denegado. Se requieren permisos de Super Administrador.' });
     }
 };
 
 module.exports = {
   protect,
   isAdmin,
+  isSuperAdmin,
 };
