@@ -1,7 +1,8 @@
-// backend/controllers/authController.js (VERSIÓN MEGA FÁBRICA FINAL)
+// RUTA: backend/src/controllers/authController.js (CON ASIGNACIÓN DE FÁBRICA GRATUITA)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
+const Factory = require('../models/factoryModel'); // <-- IMPORTACIÓN NECESARIA
 const jwt = require('jsonwebtoken');
 const { getTemporaryPhotoUrl } = require('./userController');
 
@@ -24,7 +25,8 @@ const syncUser = async (req, res) => {
         let user = await User.findOne({ telegramId });
 
         if (!user) {
-            console.warn(`[Auth Sync] ADVERTENCIA: El usuario ${telegramId} no existía. Creándolo sobre la marcha.`.yellow);
+            // --- LÓGICA DE CREACIÓN DE NUEVO USUARIO ---
+            console.log(`[Auth Sync] Creando nuevo usuario para Telegram ID: ${telegramId}`.cyan);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
             user = new User({
@@ -33,13 +35,36 @@ const syncUser = async (req, res) => {
                 fullName: fullName || username,
                 language: telegramUser.language_code || 'es'
             });
-            await user.save();
+
+            // --- INICIO DE LA IMPLEMENTACIÓN DE FÁBRICA GRATUITA (Punto 8) ---
+            const freeFactory = await Factory.findOne({ isFree: true });
+            if (freeFactory) {
+                console.log(`[Auth Sync] Fábrica gratuita encontrada: "${freeFactory.name}". Asignando al nuevo usuario.`.green);
+                const purchaseDate = new Date();
+                const expiryDate = new Date(purchaseDate);
+                expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
+
+                user.purchasedFactories.push({
+                    factory: freeFactory._id,
+                    purchaseDate: purchaseDate,
+                    expiryDate: expiryDate,
+                    lastClaim: purchaseDate // Se establece la fecha de compra para iniciar el ciclo de 24h
+                });
+            } else {
+                console.warn('[Auth Sync] ADVERTENCIA: No se encontró ninguna fábrica marcada como "isFree". El usuario se creará sin fábrica inicial.'.yellow);
+            }
+            // --- FIN DE LA IMPLEMENTACIÓN DE FÁBRICA GRATUITA ---
+            
+            await user.save(); // Se guarda el usuario con su nueva fábrica.
+
         } else {
+            // --- LÓGICA DE ACTUALIZACIÓN DE USUARIO EXISTENTE ---
             user.username = telegramUser.username || user.username;
             user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
-            await user.save();
+            await user.save(); // Se guardan los datos actualizados del perfil.
         }
         
+        // Se pueblan los datos para la respuesta al frontend
         const userWithDetails = await User.findById(user._id)
             .populate('purchasedFactories.factory')
             .populate('referredBy', 'username fullName');
@@ -58,6 +83,8 @@ const syncUser = async (req, res) => {
         return res.status(500).json({ message: 'Error interno del servidor.', details: error.message });
     }
 };
+
+// ... El resto de las funciones (getUserProfile, loginAdmin, etc.) permanecen sin cambios ...
 
 const getUserProfile = async (req, res) => {
     try {
