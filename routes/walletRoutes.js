@@ -1,27 +1,40 @@
-// backend/routes/walletRoutes.js (VERSIÓN MEGA FÁBRICA v2.1 - SINCRONIZADA FINAL)
+// RUTA: backend/src/routes/walletRoutes.js (VERSIÓN DEFINITIVA MEGA FÁBRICA)
+
 const express = require('express');
 const router = express.Router();
+
+// Importamos las funciones saneadas y el middleware de protección
 const { 
+    createDepositAddress,
     purchaseFactoryWithBalance,
-    claimFactoryProduction, // Se importa la función correcta
+    claimFactoryProduction,
     requestWithdrawal,
     getHistory 
 } = require('../controllers/walletController');
 const { protect } = require('../middleware/authMiddleware');
 
-// === RUTAS PARA EL NUEVO SISTEMA "MEGA FÁBRICA" ===
+// === RUTAS PARA EL SISTEMA "MEGA FÁBRICA" ===
+// Todas las rutas están protegidas y requieren un token de autenticación válido.
 
-// Ruta para que el usuario compre una fábrica usando su saldo interno.
+// POST /api/wallet/create-deposit-address
+// Genera la información para que un usuario realice un depósito.
+router.post('/create-deposit-address', protect, createDepositAddress);
+
+// POST /api/wallet/purchase-factory
+// Permite al usuario comprar una fábrica usando su saldo interno.
 router.post('/purchase-factory', protect, purchaseFactoryWithBalance);
 
-// Ruta para que el usuario reclame la producción de UNA fábrica específica.
-// MODIFICADO: Apunta a la función y ruta correctas que espera la HomePage.
+// POST /api/wallet/claim-production
+// Permite al usuario reclamar la producción de una fábrica específica.
 router.post('/claim-production', protect, claimFactoryProduction);
 
-// Ruta para solicitar un retiro de USDT.
+// POST /api/wallet/request-withdrawal
+// Inicia una solicitud de retiro de fondos.
 router.post('/request-withdrawal', protect, requestWithdrawal);
 
-// Ruta para obtener el historial de transacciones del usuario.
+// GET /api/wallet/history
+// Obtiene el historial de transacciones del usuario.
 router.get('/history', protect, getHistory);
+
 
 module.exports = router;

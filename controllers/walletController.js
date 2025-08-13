@@ -1,182 +1,151 @@
-// RUTA: backend/controllers/walletController.js (VERSIÓN MEGA FÁBRICA FINAL CON RECLAMO INDIVIDUAL)
+// RUTA: backend/src/controllers/walletController.js (VERSIÓN DEFINITIVA MEGA FÁBRICA)
 
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
 const Factory = require('../models/factoryModel');
 const Transaction = require('../models/transactionModel');
 const Setting = require('../models/settingsModel');
-const { createTransaction } = require('../utils/transactionLogger');
-const { distributeReferralCommissions } = require('../services/commissionService');
 const { ethers } = require('ethers');
 
-// CONSTANTE CLAVE: Duración del ciclo de producción de la fábrica.
 const FACTORY_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
 
-const purchaseFactoryWithBalance = async (req, res) => {
-  const { factoryId, quantity } = req.body;
-  const userId = req.user.id;
+// --- FUNCIÓN DE DEPÓSITO DIRECTO ---
+const createDepositAddress = async (req, res) => {
+    const userId = req.user.id;
+    const { amount } = req.body;
 
-  if (!factoryId || !quantity || quantity <= 0) {
-    return res.status(400).json({ message: 'Datos de compra inválidos.' });
-  }
-
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-
-    const factory = await Factory.findById(factoryId).lean();
-    if (!factory) {
-      throw new Error('La fábrica seleccionada no existe.');
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+        return res.status(400).json({ message: 'Se requiere una cantidad válida para el depósito.' });
     }
 
-    const user = await User.findById(userId).session(session);
-    if (!user) {
-      throw new Error('Usuario no encontrado.');
-    }
-
-    const totalCost = factory.price * quantity;
-    if (user.balance.usdt < totalCost) {
-      return res.status(400).json({ message: 'Saldo USDT insuficiente para realizar la compra.' });
-    }
-
-    const isFirstPurchase = user.purchasedFactories.length === 0 && user.totalSpending === 0;
-
-    const now = new Date();
-    user.balance.usdt -= totalCost;
-    user.totalSpending += totalCost;
-
-    for (let i = 0; i < quantity; i++) {
-        const expiryDate = new Date(now.getTime() + factory.durationDays * 24 * 60 * 60 * 1000);
-        user.purchasedFactories.push({ 
-            factory: factory._id, 
-            purchaseDate: now, 
-            expiryDate: expiryDate,
-            lastClaim: now
+    try {
+        const centralWalletAddress = process.env.CENTRAL_DEPOSIT_WALLET_ADDRESS;
+        if (!centralWalletAddress) {
+            console.error("CRITICAL ERROR: CENTRAL_DEPOSIT_WALLET_ADDRESS no está configurada en .env".red);
+            return res.status(500).json({ message: 'Error de configuración del sistema.' });
+        }
+        
+        await Transaction.create({
+            user: userId,
+            type: 'deposit',
+            status: 'pending',
+            amount: parseFloat(amount),
+            currency: 'USDT',
+            description: `Depósito pendiente de ${amount} USDT a la billetera central`,
+            metadata: { depositAddress: centralWalletAddress, expectedAmount: amount }
         });
+
+        res.status(201).json({
+            paymentAddress: centralWalletAddress,
+            paymentAmount: amount.toString(),
+            currency: 'USDT',
+            network: 'BEP20'
+        });
+    } catch (error) {
+        console.error('Error en createDepositAddress:'.red, error);
+        res.status(500).json({ message: 'Error al generar la información de depósito.' });
     }
-
-    await user.save({ session });
-
-    await createTransaction(
-        userId, 
-        'purchase', 
-        totalCost, 
-        'USDT', 
-        `Compra de ${quantity}x ${factory.name}`,
-        { factoryId: factory._id.toString(), quantity },
-        session
-    );
-
-    if (isFirstPurchase) {
-      distributeReferralCommissions(user, totalCost, session).catch(err => {
-        console.error(`[CommissionService] Error en la ejecución asíncrona post-compra para ${userId}:`, err);
-      });
-    }
-
-    await session.commitTransaction();
-
-    const finalUpdatedUser = await User.findById(userId).populate('purchasedFactories.factory');
-    res.status(200).json({ 
-        message: `¡Compra de ${quantity}x ${factory.name} exitosa!`, 
-        user: finalUpdatedUser.toObject() 
-    });
-
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('Error en purchaseFactoryWithBalance:', error);
-    res.status(500).json({ message: error.message || 'Error al procesar la compra.' });
-  } finally {
-    session.endSession();
-  }
 };
 
-const claimFactoryProduction = async (req, res) => {
-    const { purchasedFactoryId } = req.body;
+// --- FUNCIÓN DE COMPRA DE FÁBRICA ---
+const purchaseFactoryWithBalance = async (req, res) => {
+    const { factoryId, quantity = 1 } = req.body;
     const userId = req.user.id;
-
-    if (!purchasedFactoryId) {
-        return res.status(400).json({ message: 'Se requiere el ID de la fábrica comprada.' });
-    }
-    
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
-        
+        const factory = await Factory.findById(factoryId).session(session).lean();
+        if (!factory) throw new Error('La fábrica seleccionada no existe.');
+
+        const user = await User.findById(userId).session(session);
+        if (!user) throw new Error('Usuario no encontrado.');
+
+        const totalCost = factory.price * quantity;
+        if (user.balance.usdt < totalCost) {
+            return res.status(400).json({ message: 'Saldo USDT insuficiente.' });
+        }
+
+        user.balance.usdt -= totalCost;
+        const now = new Date();
+        for (let i = 0; i < quantity; i++) {
+            user.purchasedFactories.push({ 
+                factory: factory._id, 
+                purchaseDate: now, 
+                expiryDate: new Date(now.getTime() + factory.durationDays * 24 * 60 * 60 * 1000),
+                lastClaim: now
+            });
+        }
+        await user.save({ session });
+        await Transaction.create([{ user: userId, type: 'purchase', amount: -totalCost, currency: 'USDT', description: `Compra de ${quantity}x ${factory.name}`, metadata: { factoryId } }], { session });
+        await session.commitTransaction();
+
+        const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
+        res.status(200).json({ message: `¡Compra de ${quantity}x ${factory.name} exitosa!`, user: updatedUser.toObject() });
+    } catch (error) {
+        await session.abortTransaction();
+        console.error('Error en purchaseFactoryWithBalance:', error);
+        res.status(500).json({ message: error.message || 'Error al procesar la compra.' });
+    } finally {
+        session.endSession();
+    }
+};
+
+// --- FUNCIÓN DE RECLAMO DE PRODUCCIÓN ---
+const claimFactoryProduction = async (req, res) => {
+    const { purchasedFactoryId } = req.body;
+    const userId = req.user.id;
+    const session = await mongoose.startSession();
+    try {
+        session.startTransaction();
         const user = await User.findById(userId).populate('purchasedFactories.factory').session(session);
         if (!user) throw new Error('Usuario no encontrado.');
 
         const factoryInstance = user.purchasedFactories.id(purchasedFactoryId);
-        if (!factoryInstance) {
-            throw new Error('La fábrica especificada no pertenece a este usuario o no existe.');
-        }
+        if (!factoryInstance) throw new Error('Fábrica no encontrada.');
 
         const now = new Date();
-        const lastClaim = new Date(factoryInstance.lastClaim);
-        const timePassedMs = now.getTime() - lastClaim.getTime();
-
-        if (timePassedMs < FACTORY_CYCLE_DURATION_MS) {
+        if (now.getTime() - new Date(factoryInstance.lastClaim).getTime() < FACTORY_CYCLE_DURATION_MS) {
             return res.status(400).json({ message: 'El ciclo de producción de 24 horas aún no ha terminado.' });
         }
 
-        const dailyProduction = factoryInstance.factory.dailyProduction;
-        
-        user.balance.usdt += dailyProduction;
-        user.totalProductionClaimed += dailyProduction;
+        const production = factoryInstance.factory.dailyProduction;
+        user.balance.usdt += production;
         factoryInstance.lastClaim = now;
-
         await user.save({ session });
-        
-        await createTransaction(
-            userId, 
-            'production_claim', 
-            dailyProduction, 
-            'USDT', 
-            `Reclamo de producción de ${factoryInstance.factory.name}`,
-            { purchasedFactoryId },
-            session
-        );
-
+        await Transaction.create([{ user: userId, type: 'production_claim', amount: production, currency: 'USDT', description: `Reclamo de producción de ${factoryInstance.factory.name}`, metadata: { purchasedFactoryId } }], { session });
         await session.commitTransaction();
         
-        // Devolvemos el usuario actualizado para que el frontend pueda refrescar el estado.
-        res.json({
-            message: `¡Has reclamado ${dailyProduction.toFixed(2)} USDT de tu ${factoryInstance.factory.name}!`,
-            user: user.toObject(),
-        });
-
+        res.json({ message: `¡Has reclamado ${production.toFixed(2)} USDT!`, user: user.toObject() });
     } catch (error) {
         await session.abortTransaction();
-        console.error("Error al reclamar la producción de la fábrica:", error);
+        console.error("Error al reclamar la producción:", error);
         res.status(500).json({ message: error.message || "Error del servidor al procesar el reclamo." });
     } finally {
         session.endSession();
     }
 };
 
+// --- FUNCIÓN DE SOLICITUD DE RETIRO (CON CONTRASEÑA) ---
 const requestWithdrawal = async (req, res) => {
-  const { amount, walletAddress } = req.body;
+  const { amount, walletAddress, withdrawalPassword } = req.body;
   const userId = req.user.id;
   const session = await mongoose.startSession();
-
   try {
     session.startTransaction();
-
     const settings = await Setting.findOne({ singleton: 'global_settings' }).session(session);
     if (!settings) throw new Error('La configuración del sistema no está disponible.');
     
-    const numericAmount = parseFloat(amount);
-    if (!numericAmount || numericAmount < settings.minimumWithdrawal) {
-      return res.status(400).json({ message: `El retiro mínimo es ${settings.minimumWithdrawal} USDT.` });
-    }
-    if (!walletAddress || !ethers.utils.isAddress(walletAddress)) {
-      return res.status(400).json({ message: 'La dirección de billetera BEP20 no es válida.' });
-    }
-    
-    const user = await User.findById(userId).session(session);
+    const user = await User.findById(userId).select('+withdrawalPassword').session(session);
     if (!user) throw new Error('Usuario no encontrado.');
-    if (user.balance.usdt < numericAmount) {
-      return res.status(400).json({ message: 'Saldo USDT insuficiente.' });
-    }
+    if (!user.isWithdrawalPasswordSet) return res.status(403).json({ message: 'Debes configurar una contraseña de retiro primero.' });
+    if (!withdrawalPassword) return res.status(400).json({ message: 'La contraseña de retiro es obligatoria.' });
+    const isMatch = await user.matchWithdrawalPassword(withdrawalPassword);
+    if (!isMatch) return res.status(401).json({ message: 'La contraseña de retiro es incorrecta.' });
+
+    const numericAmount = parseFloat(amount);
+    if (!numericAmount || numericAmount < settings.minimumWithdrawal) return res.status(400).json({ message: `El retiro mínimo es ${settings.minimumWithdrawal} USDT.` });
+    if (!ethers.utils.isAddress(walletAddress)) return res.status(400).json({ message: 'La dirección de billetera no es válida.' });
+    if (user.balance.usdt < numericAmount) return res.status(400).json({ message: 'Saldo insuficiente.' });
 
     user.balance.usdt -= numericAmount;
     await user.save({ session });
@@ -184,29 +153,11 @@ const requestWithdrawal = async (req, res) => {
     const feeAmount = numericAmount * (settings.withdrawalFeePercent / 100);
     const netAmount = numericAmount - feeAmount;
 
-    await Transaction.create([{
-      user: userId,
-      type: 'withdrawal',
-      status: 'pending',
-      amount: numericAmount,
-      currency: 'USDT',
-      description: `Solicitud de retiro a ${walletAddress}`,
-      metadata: { 
-        walletAddress, 
-        network: 'USDT-BEP20', 
-        feePercent: settings.withdrawalFeePercent.toString(), 
-        feeAmount: feeAmount.toFixed(4), 
-        netAmount: netAmount.toFixed(4) 
-      }
-    }], { session });
-
+    await Transaction.create([{ user: userId, type: 'withdrawal', status: 'pending', amount: -numericAmount, currency: 'USDT', description: `Solicitud de retiro a ${walletAddress}`, metadata: { walletAddress, feeAmount, netAmount } }], { session });
     await session.commitTransaction();
 
     const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
-    res.status(201).json({ 
-      message: 'Tu solicitud de retiro ha sido enviada con éxito y está pendiente de revisión.', 
-      user: updatedUser.toObject()
-    });
+    res.status(201).json({ message: 'Tu solicitud de retiro ha sido enviada con éxito.', user: updatedUser.toObject() });
   } catch (error) {
     await session.abortTransaction();
     console.error('Error en requestWithdrawal:', error);
@@ -216,6 +167,7 @@ const requestWithdrawal = async (req, res) => {
   }
 };
 
+// --- FUNCIÓN DE HISTORIAL ---
 const getHistory = async (req, res) => {
   try {
     const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 }).limit(100);
@@ -227,6 +179,7 @@ const getHistory = async (req, res) => {
 };
 
 module.exports = {
+  createDepositAddress,
   purchaseFactoryWithBalance,
   claimFactoryProduction,
   requestWithdrawal,

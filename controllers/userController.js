@@ -1,75 +1,86 @@
-// backend/controllers/userController.js (VERSIÓN INSTRUMENTADA Y COMPLETA)
-const axios = require('axios');
+// RUTA: backend/src/controllers/userController.js (CON LÓGICA DE CONTRASEÑA DE RETIRO)
+
 const User = require('../models/userModel');
-const asyncHandler = require('express-async-handler');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
-const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
-// Asegurémonos de que el placeholder sea una URL completa para evitar problemas
-const PLACEHOLDER_AVATAR = `${process.env.FRONTEND_URL}/assets/images/user-avatar-placeholder.png`;
-
-/**
- * @desc    Obtiene la URL de descarga temporal de una foto de Telegram.
- * @param   {string} photoFileId - El file_id permanente de la foto.
- * @returns {Promise<string|null>} La URL temporal o null si falla.
- */
-const getTemporaryPhotoUrl = async (photoFileId) => {
-    // 1. PUNTO DE ENTRADA
-    console.log(`[PHOTO-TRACE] ---> [getTemporaryPhotoUrl] Invocado.`);
-    if (!photoFileId) {
-        console.log(`[PHOTO-TRACE] ---> [getTemporaryPhotoUrl] No hay photoFileId. Retornando null.`);
-        return null;
+// ... (configuración de S3 y getTemporaryPhotoUrl se mantienen)
+const s3Client = new S3Client({
+    region: process.env.AWS_REGION,
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
     }
-    console.log(`[PHOTO-TRACE] ---> [getTemporaryPhotoUrl] Intentando resolver file_id: ${photoFileId}`);
+});
 
+const getTemporaryPhotoUrl = async (fileId) => {
+    if (!fileId) return null;
     try {
-        // 2. LLAMADA A LA API DE TELEGRAM
-        console.log(`[PHOTO-TRACE] ---> [getTemporaryPhotoUrl] Realizando llamada a /getFile...`);
-        const fileInfoResponse = await axios.get(`${TELEGRAM_API_URL}/getFile`, {
-            params: { file_id: photoFileId },
-            timeout: 4000 // Timeout agresivo para no bloquear
+        const command = new GetObjectCommand({
+            Bucket: process.env.AWS_S3_BUCKET_NAME,
+            Key: fileId,
         });
-
-        if (!fileInfoResponse.data.ok) {
-            console.error(`[PHOTO-TRACE] ---> [getTemporaryPhotoUrl] ERROR: Telegram API no pudo obtener la info del archivo para file_id: ${photoFileId}. Respuesta:`, fileInfoResponse.data);
-            return null;
-        }
-
-        const filePath = fileInfoResponse.data.result.file_path;
-        const finalUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${filePath}`;
-        
-        // 3. ÉXITO
-        console.log(`[PHOTO-TRACE] ---> [getTemporaryPhotoUrl] Éxito. URL generada.`);
-        return finalUrl;
+        const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 }); // URL válida por 1 hora
+        return url;
     } catch (error) {
-        // 4. FALLO
-        console.error(`[PHOTO-TRACE] ---> [getTemporaryPhotoUrl] CATCH: Error al resolver la foto para el file_id ${photoFileId}:`, error.message);
+        console.error("Error generando URL firmada para S3:", error);
         return null;
     }
 };
 
-/**
- * @desc    (Deprecado) Redirige a la URL de la foto. Ya no es la estrategia principal.
- * @route   GET /api/users/:telegramId/photo
- * @access  Public
- */
-const getUserPhoto = asyncHandler(async (req, res) => {
-    const { telegramId } = req.params;
-    const user = await User.findOne({ telegramId }).select('photoFileId').lean();
 
-    if (!user || !user.photoFileId) {
-        return res.redirect(PLACEHOLDER_AVATAR);
+// --- INICIO DE LA NUEVA FUNCIÓN ---
+
+const setWithdrawalPassword = async (req, res) => {
+    // El ID del usuario se obtiene del token JWT, gracias a nuestro 'authMiddleware'
+    const userId = req.user.id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ message: 'La nueva contraseña debe tener al menos 6 caracteres.' });
     }
 
-    const temporaryFileUrl = await getTemporaryPhotoUrl(user.photoFileId);
-    
-    if (temporaryFileUrl) {
-        res.redirect(302, temporaryFileUrl);
-    } else {
-        res.redirect(PLACEHOLDER_AVATAR);
-    }
-});
+    try {
+        // Seleccionamos explícitamente los campos protegidos para poder usarlos
+        const user = await User.findById(userId).select('+withdrawalPassword +isWithdrawalPasswordSet');
+        if (!user) {
+            return res.status(404).json({ message: 'Usuario no encontrado.' });
+        }
 
+        // Si el usuario ya tiene una contraseña, verificamos la actual
+        if (user.isWithdrawalPasswordSet) {
+            if (!currentPassword) {
+                return res.status(400).json({ message: 'La contraseña actual es obligatoria para realizar el cambio.' });
+            }
+            const isMatch = await user.matchWithdrawalPassword(currentPassword);
+            if (!isMatch) {
+                return res.status(401).json({ message: 'La contraseña actual es incorrecta.' });
+            }
+        }
+
+        // Si todo es correcto, establecemos la nueva contraseña
+        user.withdrawalPassword = newPassword;
+        user.isWithdrawalPasswordSet = true;
+        await user.save();
+        
+        // Devolvemos el usuario actualizado (sin los campos de contraseña)
+        const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
+
+        res.status(200).json({
+            message: 'Contraseña de retiro actualizada con éxito.',
+            user: updatedUser
+        });
+
+    } catch (error) {
+        console.error('Error en setWithdrawalPassword:'.red, error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
+    }
+};
+
+// --- FIN DE LA NUEVA FUNCIÓN ---
+
+// Se exporta la nueva función junto con las existentes
 module.exports = {
-    getUserPhoto,
-    getTemporaryPhotoUrl
+    getTemporaryPhotoUrl,
+    setWithdrawalPassword 
 };

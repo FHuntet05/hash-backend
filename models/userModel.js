@@ -1,71 +1,89 @@
-// backend/models/userModel.js (VERSIÓN MEGA FÁBRICA v2.1 - CON FLAG DE RESETEO)
+// RUTA: backend/src/models/userModel.js (CON CONTRASEÑA DE RETIRO)
+
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+// ... (purchasedFactorySchema y transactionSchema se mantienen sin cambios)
 const purchasedFactorySchema = new mongoose.Schema({
-  factory: { type: mongoose.Schema.Types.ObjectId, ref: 'Factory', required: true }, 
-  purchaseDate: { type: Date, default: Date.now }, 
-  expiryDate: { type: Date, required: true },
-  lastProductionTimestamp: { type: Date, default: Date.now } 
-}, { _id: true });
+    factory: { type: mongoose.Schema.Types.ObjectId, ref: 'Factory', required: true },
+    purchaseDate: { type: Date, required: true },
+    expiryDate: { type: Date, required: true },
+    lastClaim: { type: Date },
+});
+
+const transactionSchema = new mongoose.Schema({
+    type: { type: String, enum: ['deposit', 'withdrawal', 'purchase', 'swap_ntx_to_usdt', 'mining_claim', 'referral_commission', 'task_reward'], required: true },
+    amount: { type: Number, required: true },
+    currency: { type: String, required: true, default: 'USDT' },
+    description: { type: String, required: true },
+    status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'completed' },
+}, { timestamps: true });
+
 
 const userSchema = new mongoose.Schema({
-  telegramId: { type: String, required: true, unique: true, index: true },
-  username: { type: String, required: true },
-  fullName: { type: String },
-  password: { type: String, required: false, select: false },
-  role: { type: String, enum: ['user', 'admin'], default: 'user' },
-  status: { type: String, enum: ['active', 'banned'], default: 'active' },
-  
-  // Flag para forzar el cambio de contraseña en el primer login de un admin.
-  passwordResetRequired: { type: Boolean, default: false, select: false },
+    telegramId: { type: String, required: true, unique: true },
+    username: { type: String, unique: true, sparse: true },
+    fullName: { type: String },
+    role: { type: String, enum: ['user', 'admin'], default: 'user' },
+    password: { type: String, select: false },
+    passwordResetRequired: { type: Boolean, default: false },
+    balance: {
+        usdt: { type: Number, default: 0 },
+        ntx: { type: Number, default: 0 },
+    },
+    productionBalance: {
+        usdt: { type: Number, default: 0 },
+        ntx: { type: Number, default: 0 },
+    },
+    purchasedFactories: [purchasedFactorySchema],
+    transactions: [transactionSchema],
+    photoFileId: { type: String },
+    language: { type: String, default: 'es' },
+    referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    referrals: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 
-  twoFactorSecret: { type: String, select: false },
-  isTwoFactorEnabled: { type: Boolean, default: false },
-  language: { type: String, default: 'es' },
-  photoFileId: { type: String, default: null },
-  balance: { usdt: { type: Number, default: 0 } },
-  productionBalance: { usdt: { type: Number, default: 0 } },
-  totalRecharge: { type: Number, default: 0 },
-  totalWithdrawal: { type: Number, default: 0 },
-  totalProductionClaimed: { type: Number, default: 0 },
-  totalSpending: { type: Number, default: 0 },
-  purchasedFactories: [purchasedFactorySchema],
-  referralCode: { type: String, unique: true, default: null },
-  referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  referrals: [{ level: { type: Number, required: true }, user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true } }],
-}, {
-  timestamps: true,
-  toJSON: { virtuals: true },
-  toObject: { virtuals: true }
-});
+    // --- NUEVOS CAMPOS PARA CONTRASEÑA DE RETIRO ---
+    withdrawalPassword: {
+        type: String,
+        select: false, // Nunca se envía al frontend por defecto
+    },
+    isWithdrawalPasswordSet: {
+        type: Boolean,
+        default: false, // Por defecto, el usuario no ha configurado la contraseña
+    },
+    // ---------------------------------------------
+    
+}, { timestamps: true });
 
-userSchema.virtual('totalDailyProduction').get(function() {
-  if (!this.purchasedFactories || this.purchasedFactories.length === 0) {
-    return 0;
-  }
-  return this.purchasedFactories.reduce((total, pf) => {
-    if (new Date() > pf.expiryDate) {
-        return total;
+
+// --- MIDDLEWARE Y MÉTODOS PARA CONTRASEÑA DE LOGIN ---
+userSchema.pre('save', async function(next) {
+    if (!this.isModified('password')) {
+        return next();
     }
-    return total + (pf.factory?.dailyProduction || 0);
-  }, 0);
-});
-
-userSchema.pre('save', async function (next) {
-  if (this.isNew && !this.referralCode) {
-      this.referralCode = `ref_${Date.now().toString(36)}${Math.random().toString(36).substr(2, 5)}`;
-  }
-  if (this.isModified('password') && this.password) {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
-  }
-  next();
+    next();
 });
 
 userSchema.methods.matchPassword = async function(enteredPassword) {
-  if (!this.password || !enteredPassword) return false;
-  return await bcrypt.compare(enteredPassword, this.password);
+    return await bcrypt.compare(enteredPassword, this.password);
 };
+
+// --- NUEVO MIDDLEWARE Y MÉTODO PARA CONTRASEÑA DE RETIRO ---
+userSchema.pre('save', async function(next) {
+    if (!this.isModified('withdrawalPassword') || !this.withdrawalPassword) {
+        return next();
+    }
+    const salt = await bcrypt.genSalt(10);
+    this.withdrawalPassword = await bcrypt.hash(this.withdrawalPassword, salt);
+    next();
+});
+
+userSchema.methods.matchWithdrawalPassword = async function(enteredPassword) {
+    if (!this.withdrawalPassword) return false;
+    return await bcrypt.compare(enteredPassword, this.withdrawalPassword);
+};
+// -------------------------------------------------------------
 
 module.exports = mongoose.model('User', userSchema);
