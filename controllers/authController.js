@@ -1,4 +1,4 @@
-// RUTA: backend/src/controllers/authController.js (v2.2 - CORRECCIÓN ATÓMICA FINAL)
+// RUTA: backend/src/controllers/authController.js (v3.0 - MÉTODO "GUARDAR Y REBUSCAR" A PRUEBA DE ERRORES)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
@@ -24,7 +24,8 @@ const syncUser = async (req, res) => {
     const telegramId = telegramUser.id.toString();
 
     try {
-        let user = await User.findOne({ telegramId });
+        let userFromDB = await User.findOne({ telegramId }); // Renombramos la variable para claridad
+        let userForResponse; // Esta será la variable final que enviaremos
 
         let photoFileId = null;
         try {
@@ -36,16 +37,16 @@ const syncUser = async (req, res) => {
                 photoFileId = photos[photos.length - 1].file_id;
             }
         } catch (photoError) {
-            console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId} desde la API.`, photoError.message);
+            console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId}.`, photoError.message);
         }
 
-        if (!user) {
-            // --- INICIO DE REFACTORIZACIÓN CRÍTICA ---
+        if (!userFromDB) {
+            // --- INICIO DE LA LÓGICA "CERO CONFIANZA" ---
             console.log(`[Auth Sync] Creando nuevo usuario para Telegram ID: ${telegramId}`.cyan);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
             
-            user = new User({
+            const newUser = new User({
                 telegramId,
                 username,
                 fullName: fullName || username,
@@ -60,53 +61,55 @@ const syncUser = async (req, res) => {
                 const expiryDate = new Date(purchaseDate);
                 expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
 
-                user.purchasedFactories.push({
+                newUser.purchasedFactories.push({
                     factory: freeFactory._id,
                     purchaseDate: purchaseDate,
                     expiryDate: expiryDate,
                     lastClaim: purchaseDate
                 });
             } else {
-                console.warn('[Auth Sync] ADVERTENCIA: No se encontró ninguna fábrica marcada como "isFree".'.yellow);
+                console.warn('[Auth Sync] ADVERTENCIA: No se encontró fábrica "isFree".'.yellow);
             }
             
-            // 1. Guardamos el usuario con su fábrica.
-            await user.save();
+            // 1. Guardamos el nuevo usuario en la base de datos.
+            const savedUser = await newUser.save();
             
-            // 2. Ahora, en lugar de volver a buscar en la DB, poblamos el documento que ya tenemos en memoria.
-            // Esto es más seguro y eficiente, y garantiza que los datos de la fábrica estén presentes.
-            await user.populate({
-                path: 'purchasedFactories.factory',
-                model: 'Factory'
-            });
-            // --- FIN DE REFACTORIZACIÓN CRÍTICA ---
+            // 2. IGNORAMOS el objeto `savedUser`. Volvemos a buscarlo desde cero para garantizar la consistencia.
+            console.log(`[Auth Sync] Usuario ${savedUser._id} guardado. Rebuscando y poblando...`);
+            userForResponse = await User.findById(savedUser._id)
+                .populate({
+                    path: 'purchasedFactories.factory',
+                    model: 'Factory'
+                })
+                .populate('referredBy', 'username fullName');
+
+            console.log(`[Auth Sync] Datos finales para nuevo usuario: Fábricas encontradas: ${userForResponse.purchasedFactories.length}`);
+            // --- FIN DE LA LÓGICA "CERO CONFIANZA" ---
 
         } else {
             // --- LÓGICA DE ACTUALIZACIÓN DE USUARIO EXISTENTE ---
-            user.username = telegramUser.username || user.username;
-            user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
+            userFromDB.username = telegramUser.username || userFromDB.username;
+            userFromDB.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || userFromDB.fullName;
             if (photoFileId) {
-                user.photoFileId = photoFileId;
+                userFromDB.photoFileId = photoFileId;
             }
-            await user.save();
+            const updatedUser = await userFromDB.save();
 
-            // Aseguramos que para usuarios existentes también se popule la información de la fábrica.
-            await user.populate({
-                path: 'purchasedFactories.factory',
-                model: 'Factory'
-            });
+            // Aquí también, volvemos a buscar y poblar para asegurar consistencia
+            userForResponse = await User.findById(updatedUser._id)
+                .populate({
+                    path: 'purchasedFactories.factory',
+                    model: 'Factory'
+                })
+                .populate('referredBy', 'username fullName');
         }
-        
-        // A partir de aquí, el objeto 'user' (ya sea nuevo o existente) está garantizado
-        // de tener los datos de la fábrica populados si existen.
-        const userWithDetails = user; 
         
         const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
         
-        const userObject = userWithDetails.toObject();
+        const userObject = userForResponse.toObject();
         userObject.photoUrl = await getTemporaryPhotoUrl(userObject.photoFileId) || PLACEHOLDER_AVATAR_URL;
         
-        const token = generateToken(user._id);
+        const token = generateToken(userForResponse._id);
 
         res.status(200).json({ token, user: userObject, settings });
 
@@ -115,6 +118,8 @@ const syncUser = async (req, res) => {
         return res.status(500).json({ message: 'Error interno del servidor.', details: error.message });
     }
 };
+
+// ... El resto del controlador (getUserProfile, loginAdmin, etc.) permanece exactamente igual ...
 
 const getUserProfile = async (req, res) => {
     try {
