@@ -1,4 +1,4 @@
-// RUTA: backend/src/controllers/authController.js (v5.0 - LÓGICA AUTOCURABLE)
+// RUTA: backend/controllers/authController.js (v6.0 - LÓGICA DE BANEO Y MANTENIMIENTO)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
@@ -24,7 +24,28 @@ const syncUser = async (req, res) => {
     const telegramId = telegramUser.id.toString();
 
     try {
+        // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA #1: MODO MANTENIMIENTO ---
+        // Se verifica el modo mantenimiento ANTES de cualquier operación de usuario.
+        const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
+        if (settings.maintenanceMode) {
+            // Se devuelve un error 503 Service Unavailable y los datos de mantenimiento.
+            // El frontend usará esto para mostrar la pantalla de mantenimiento.
+            return res.status(503).json({ 
+                inMaintenance: true, 
+                maintenanceMessage: settings.maintenanceMessage 
+            });
+        }
+        // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA #1 ---
+
         let user = await User.findOne({ telegramId });
+
+        // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA #2: VALIDACIÓN DE BANEO ---
+        // Si el usuario existe, verificamos su estado ANTES de proceder.
+        if (user && user.status === 'banned') {
+            // Se devuelve un error 403 Forbidden para denegar el acceso.
+            return res.status(403).json({ message: 'Tu cuenta ha sido suspendida. Contacta a soporte.' });
+        }
+        // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA #2 ---
 
         let photoFileId = null;
         try {
@@ -39,8 +60,6 @@ const syncUser = async (req, res) => {
             console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId}.`, photoError.message);
         }
 
-        // El bloque if (!user) ahora es un caso de borde, la creación principal está en el bot.
-        // Lo mantenemos por seguridad.
         if (!user) {
             console.warn(`[Auth Sync] Usuario no encontrado en sync, creando desde cero (caso de borde)...`.yellow);
             const username = telegramUser.username || `user_${telegramId}`;
@@ -56,8 +75,6 @@ const syncUser = async (req, res) => {
             user = new User({ telegramId, username, fullName, language: telegramUser.language_code || 'es', photoFileId, purchasedFactories: initialFactories });
             
         } else {
-            // --- INICIO DE LÓGICA AUTOCURABLE ---
-            // Si el usuario existe pero por alguna razón no tiene fábricas, le asignamos la gratuita.
             if (!user.purchasedFactories || user.purchasedFactories.length === 0) {
                 const freeFactory = await Factory.findOne({ isFree: true }).lean();
                 if (freeFactory) {
@@ -73,22 +90,18 @@ const syncUser = async (req, res) => {
                     });
                 }
             }
-            // --- FIN DE LÓGICA AUTOCURABLE ---
         }
 
-        // Actualizamos los datos del perfil y guardamos
         user.username = telegramUser.username || user.username;
         user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
         if (photoFileId) user.photoFileId = photoFileId;
         
         await user.save();
         
-        // Poblamos los datos para la respuesta final
         const userForResponse = await User.findById(user._id)
             .populate({ path: 'purchasedFactories.factory', model: 'Factory' })
             .populate('referredBy', 'username fullName');
         
-        const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
         const userObject = userForResponse.toObject();
         userObject.photoUrl = await getTemporaryPhotoUrl(userObject.photoFileId) || PLACEHOLDER_AVATAR_URL;
         const token = generateToken(userForResponse._id);
