@@ -1,10 +1,10 @@
-// RUTA: backend/src/controllers/authController.js (v2.0 - FOTO Y FÁBRICA CORREGIDAS)
+// RUTA: backend/src/controllers/authController.js (v2.2 - CORRECCIÓN ATÓMICA FINAL)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
 const Factory = require('../models/factoryModel');
 const jwt = require('jsonwebtoken');
-const axios = require('axios'); // <-- IMPORTACIÓN NECESARIA PARA LA API DE TELEGRAM
+const axios = require('axios');
 const { getTemporaryPhotoUrl } = require('./userController');
 
 const PLACEHOLDER_AVATAR_URL = `${process.env.FRONTEND_URL}/assets/images/user-avatar-placeholder.png`;
@@ -26,41 +26,36 @@ const syncUser = async (req, res) => {
     try {
         let user = await User.findOne({ telegramId });
 
-        // --- INICIO DE CORRECCIÓN DE FOTO ---
         let photoFileId = null;
         try {
-            // Se hace una llamada a la API de Telegram para obtener las fotos de perfil del usuario
             const profilePhotosResponse = await axios.get(`${TELEGRAM_API_URL}/getUserProfilePhotos`, {
                 params: { user_id: telegramId, limit: 1 }
             });
-
-            // Si el usuario tiene fotos y la respuesta es exitosa...
             if (profilePhotosResponse.data.ok && profilePhotosResponse.data.result.total_count > 0) {
-                // ...tomamos la foto de mayor resolución (la última en el array 'photos')
                 const photos = profilePhotosResponse.data.result.photos[0];
                 photoFileId = photos[photos.length - 1].file_id;
             }
         } catch (photoError) {
             console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId} desde la API.`, photoError.message);
         }
-        // --- FIN DE CORRECCIÓN DE FOTO ---
 
         if (!user) {
-            // --- LÓGICA DE CREACIÓN DE NUEVO USUARIO ---
+            // --- INICIO DE REFACTORIZACIÓN CRÍTICA ---
             console.log(`[Auth Sync] Creando nuevo usuario para Telegram ID: ${telegramId}`.cyan);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
+            
             user = new User({
                 telegramId,
                 username,
                 fullName: fullName || username,
                 language: telegramUser.language_code || 'es',
-                photoFileId: photoFileId // Se guarda el file_id de la foto al crear
+                photoFileId: photoFileId
             });
 
-            const freeFactory = await Factory.findOne({ isFree: true }).lean(); // .lean() para optimizar
+            const freeFactory = await Factory.findOne({ isFree: true }).lean();
             if (freeFactory) {
-                console.log(`[Auth Sync] Fábrica gratuita encontrada: "${freeFactory.name}". Asignando al nuevo usuario.`.green);
+                console.log(`[Auth Sync] Fábrica gratuita encontrada: "${freeFactory.name}". Asignando...`.green);
                 const purchaseDate = new Date();
                 const expiryDate = new Date(purchaseDate);
                 expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
@@ -75,32 +70,40 @@ const syncUser = async (req, res) => {
                 console.warn('[Auth Sync] ADVERTENCIA: No se encontró ninguna fábrica marcada como "isFree".'.yellow);
             }
             
+            // 1. Guardamos el usuario con su fábrica.
             await user.save();
+            
+            // 2. Ahora, en lugar de volver a buscar en la DB, poblamos el documento que ya tenemos en memoria.
+            // Esto es más seguro y eficiente, y garantiza que los datos de la fábrica estén presentes.
+            await user.populate({
+                path: 'purchasedFactories.factory',
+                model: 'Factory'
+            });
+            // --- FIN DE REFACTORIZACIÓN CRÍTICA ---
 
         } else {
             // --- LÓGICA DE ACTUALIZACIÓN DE USUARIO EXISTENTE ---
             user.username = telegramUser.username || user.username;
             user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
-            if (photoFileId) { // Solo actualiza la foto si se obtuvo una nueva
+            if (photoFileId) {
                 user.photoFileId = photoFileId;
             }
             await user.save();
+
+            // Aseguramos que para usuarios existentes también se popule la información de la fábrica.
+            await user.populate({
+                path: 'purchasedFactories.factory',
+                model: 'Factory'
+            });
         }
         
-        // --- INICIO DE CORRECCIÓN DE POPULATE ---
-        // Se asegura de poblar completamente los detalles de la fábrica.
-        const userWithDetails = await User.findById(user._id)
-            .populate({
-                path: 'purchasedFactories.factory',
-                model: 'Factory' // Es una buena práctica especificar el modelo
-            })
-            .populate('referredBy', 'username fullName');
-        // --- FIN DE CORRECCIÓN DE POPULATE ---
-
+        // A partir de aquí, el objeto 'user' (ya sea nuevo o existente) está garantizado
+        // de tener los datos de la fábrica populados si existen.
+        const userWithDetails = user; 
+        
         const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
         
         const userObject = userWithDetails.toObject();
-        // Se usa el photoFileId del usuario ya guardado en la DB para obtener la URL temporal
         userObject.photoUrl = await getTemporaryPhotoUrl(userObject.photoFileId) || PLACEHOLDER_AVATAR_URL;
         
         const token = generateToken(user._id);
@@ -112,8 +115,6 @@ const syncUser = async (req, res) => {
         return res.status(500).json({ message: 'Error interno del servidor.', details: error.message });
     }
 };
-
-// ... El resto de las funciones (getUserProfile, loginAdmin, etc.) permanecen sin cambios ...
 
 const getUserProfile = async (req, res) => {
     try {
