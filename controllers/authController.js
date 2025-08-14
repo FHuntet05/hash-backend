@@ -1,4 +1,4 @@
-// RUTA: backend/src/controllers/authController.js (v3.0 - MÉTODO "GUARDAR Y REBUSCAR" A PRUEBA DE ERRORES)
+// RUTA: backend/src/controllers/authController.js (v4.0 - ASIGNACIÓN DIRECTA DE FÁBRICA)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
@@ -24,8 +24,8 @@ const syncUser = async (req, res) => {
     const telegramId = telegramUser.id.toString();
 
     try {
-        let userFromDB = await User.findOne({ telegramId }); // Renombramos la variable para claridad
-        let userForResponse; // Esta será la variable final que enviaremos
+        let userFromDB = await User.findOne({ telegramId });
+        let userForResponse;
 
         let photoFileId = null;
         try {
@@ -41,27 +41,21 @@ const syncUser = async (req, res) => {
         }
 
         if (!userFromDB) {
-            // --- INICIO DE LA LÓGICA "CERO CONFIANZA" ---
             console.log(`[Auth Sync] Creando nuevo usuario para Telegram ID: ${telegramId}`.cyan);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
             
-            const newUser = new User({
-                telegramId,
-                username,
-                fullName: fullName || username,
-                language: telegramUser.language_code || 'es',
-                photoFileId: photoFileId
-            });
-
+            // --- INICIO DE CORRECCIÓN CRÍTICA DE ASIGNACIÓN ---
+            const initialFactories = []; // 1. Crear un array JS normal
             const freeFactory = await Factory.findOne({ isFree: true }).lean();
             if (freeFactory) {
-                console.log(`[Auth Sync] Fábrica gratuita encontrada: "${freeFactory.name}". Asignando...`.green);
+                console.log(`[Auth Sync] Fábrica gratuita encontrada: "${freeFactory.name}". Preparando para asignar...`.green);
                 const purchaseDate = new Date();
                 const expiryDate = new Date(purchaseDate);
                 expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
 
-                newUser.purchasedFactories.push({
+                // 2. Añadir la fábrica al array normal
+                initialFactories.push({
                     factory: freeFactory._id,
                     purchaseDate: purchaseDate,
                     expiryDate: expiryDate,
@@ -70,12 +64,20 @@ const syncUser = async (req, res) => {
             } else {
                 console.warn('[Auth Sync] ADVERTENCIA: No se encontró fábrica "isFree".'.yellow);
             }
+
+            const newUser = new User({
+                telegramId,
+                username,
+                fullName: fullName || username,
+                language: telegramUser.language_code || 'es',
+                photoFileId: photoFileId,
+                purchasedFactories: initialFactories // 3. Asignar el array completo directamente en la creación
+            });
+            // --- FIN DE CORRECCIÓN CRÍTICA DE ASIGNACIÓN ---
             
-            // 1. Guardamos el nuevo usuario en la base de datos.
             const savedUser = await newUser.save();
             
-            // 2. IGNORAMOS el objeto `savedUser`. Volvemos a buscarlo desde cero para garantizar la consistencia.
-            console.log(`[Auth Sync] Usuario ${savedUser._id} guardado. Rebuscando y poblando...`);
+            console.log(`[Auth Sync] Usuario ${savedUser._id} guardado. Rebuscando y poblando para asegurar consistencia...`);
             userForResponse = await User.findById(savedUser._id)
                 .populate({
                     path: 'purchasedFactories.factory',
@@ -83,19 +85,14 @@ const syncUser = async (req, res) => {
                 })
                 .populate('referredBy', 'username fullName');
 
-            console.log(`[Auth Sync] Datos finales para nuevo usuario: Fábricas encontradas: ${userForResponse.purchasedFactories.length}`);
-            // --- FIN DE LA LÓGICA "CERO CONFIANZA" ---
-
         } else {
-            // --- LÓGICA DE ACTUALIZACIÓN DE USUARIO EXISTENTE ---
             userFromDB.username = telegramUser.username || userFromDB.username;
             userFromDB.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || userFromDB.fullName;
             if (photoFileId) {
                 userFromDB.photoFileId = photoFileId;
             }
             const updatedUser = await userFromDB.save();
-
-            // Aquí también, volvemos a buscar y poblar para asegurar consistencia
+            
             userForResponse = await User.findById(updatedUser._id)
                 .populate({
                     path: 'purchasedFactories.factory',
@@ -118,8 +115,6 @@ const syncUser = async (req, res) => {
         return res.status(500).json({ message: 'Error interno del servidor.', details: error.message });
     }
 };
-
-// ... El resto del controlador (getUserProfile, loginAdmin, etc.) permanece exactamente igual ...
 
 const getUserProfile = async (req, res) => {
     try {
