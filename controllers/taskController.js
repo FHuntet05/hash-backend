@@ -1,10 +1,9 @@
-// backend/controllers/taskController.js (VERSIÓN FÉNIX v24.0 - BACKEND-DRIVEN)
+// RUTA: backend/controllers/taskController.js (v25.0 - LÓGICA DE NEGOCIO CORREGIDA)
 const asyncHandler = require('express-async-handler');
 const User = require('../models/userModel.js');
+const Factory = require('../models/factoryModel.js'); // <-- IMPORTANTE: Necesitamos el modelo Factory
 
-// --- CONFIGURACIÓN CENTRALIZADA DE TAREAS ---
-// Esta es la ÚNICA fuente de verdad para las tareas.
-// Puede modificar títulos, descripciones y recompensas aquí.
+// --- CONFIGURACIÓN CENTRALIZADA DE TAREAS (Sin cambios) ---
 const TASKS_CONFIG = {
     FIRST_PURCHASE: {
         title: "Primera Compra",
@@ -39,8 +38,8 @@ const TASKS_CONFIG = {
     TELEGRAM_VISIT: {
         title: "Unirse a la Comunidad",
         description: "Visita nuestro grupo oficial de Telegram.",
-        reward: 0.2, // Recompensa por visitar
-        actionUrl: "https://t.me/MegaFabricaOficial" // Enlace real
+        reward: 0.2,
+        actionUrl: "https://t.me/MegaFabricaOficial"
     }
 };
 
@@ -50,18 +49,23 @@ const TASKS_CONFIG = {
  * @access Private
  */
 const getTaskStatus = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('purchasedFactories referrals claimedTasks telegramVisited');
+    // Populate nos permite acceder a los datos completos de cada fábrica
+    const user = await User.findById(req.user.id)
+        .select('purchasedFactories referrals claimedTasks telegramVisited')
+        .populate('purchasedFactories.factory'); // <-- CAMBIO CLAVE
+
     if (!user) {
         res.status(404);
         throw new Error('Usuario no encontrado');
     }
 
-    // Calcular condiciones una sola vez
-    const hasPurchased = user.purchasedFactories.length > 0;
-    const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
-    const hasVisitedTelegram = user.telegramVisited;
+    // --- INICIO DE CORRECCIÓN: Lógica de "Primera Compra" ---
+    // Ahora filtramos las fábricas para encontrar al menos una que NO sea gratuita.
+    const hasMadeFirstPurchase = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
+    // --- FIN DE CORRECCIÓN ---
 
-    // Construir la respuesta dinámica
+    const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
+
     const responseTasks = Object.keys(TASKS_CONFIG).map(taskId => {
         const task = TASKS_CONFIG[taskId];
         let isCompleted = false;
@@ -69,13 +73,12 @@ const getTaskStatus = asyncHandler(async (req, res) => {
 
         switch (taskId) {
             case 'FIRST_PURCHASE':
-                isCompleted = hasPurchased;
+                isCompleted = hasMadeFirstPurchase;
                 break;
             case 'TELEGRAM_VISIT':
-                // La tarea es visitable, no se completa hasta que se reclama.
                 isCompleted = true; 
                 break;
-            default: // Tareas de invitación
+            default:
                 if (taskId.startsWith('INVITE_')) {
                     isCompleted = level1ReferralCount >= task.target;
                     progress = level1ReferralCount;
@@ -120,7 +123,7 @@ const claimTaskReward = asyncHandler(async (req, res) => {
         throw new Error('Tarea no válida.');
     }
 
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).populate('purchasedFactories.factory');
     if (!user) {
         res.status(404);
         throw new Error('Usuario no encontrado');
@@ -132,15 +135,15 @@ const claimTaskReward = asyncHandler(async (req, res) => {
     }
 
     let isCompleted = false;
-    // Validar compleción en el servidor para seguridad
     switch (taskId) {
         case 'FIRST_PURCHASE':
-            isCompleted = user.purchasedFactories.length > 0;
+            // Re-validamos con la lógica correcta en el servidor
+            isCompleted = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
             break;
         case 'TELEGRAM_VISIT':
-            isCompleted = true; // El acto de reclamar completa la tarea
+            isCompleted = true;
             break;
-        default: // Tareas de invitación
+        default:
             if (taskId.startsWith('INVITE_')) {
                 const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
                 isCompleted = level1ReferralCount >= taskConfig.target;
@@ -160,7 +163,6 @@ const claimTaskReward = asyncHandler(async (req, res) => {
         description: `Recompensa de tarea: ${taskConfig.title}`
     };
 
-    // Actualización atómica
     const updateQuery = {
         $inc: { 'balance.usdt': reward },
         $set: { [`claimedTasks.${taskId}`]: true },
@@ -171,13 +173,18 @@ const claimTaskReward = asyncHandler(async (req, res) => {
         updateQuery.$set.telegramVisited = true;
     }
 
-    await User.findByIdAndUpdate(userId, updateQuery);
+    // --- INICIO DE CORRECCIÓN: Devolver el usuario actualizado ---
+    // Usamos { new: true } para obtener el documento después de la actualización.
+    const updatedUser = await User.findByIdAndUpdate(userId, updateQuery, { new: true });
+    // --- FIN DE CORRECCIÓN ---
 
-    res.json({ message: `¡Recompensa de +${reward.toFixed(2)} USDT reclamada!` });
+    res.json({ 
+        message: `¡Recompensa de +${reward.toFixed(2)} USDT reclamada!`,
+        user: updatedUser // Devolvemos el usuario con el saldo actualizado
+    });
 });
 
 module.exports = {
     getTaskStatus,
     claimTaskReward,
-    // La ruta markTaskAsVisited ya no es necesaria, su lógica está en claimTaskReward
 };
