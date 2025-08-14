@@ -1,4 +1,4 @@
-// backend/index.js (VERSIÓN MEGA FÁBRICA v1.1 - CORS SIMPLIFICADO)
+// backend/index.js (VERSIÓN MEGA FÁBRICA v1.2 - RUTAS DE FÁBRICA INTEGRADAS)
 
 // --- IMPORTS Y CONFIGURACIÓN INICIAL ---
 const express = require('express');
@@ -18,7 +18,6 @@ dotenv.config();
 // --- VERIFICACIÓN DE VARIABLES DE ENTORNO ---
 function checkEnvVariables() {
     console.log('[SISTEMA] Verificando variables de entorno críticas...');
-    // MODIFICADO: Se elimina ADMIN_URL de la lista de requeridos.
     const requiredVars = ['MONGO_URI', 'JWT_SECRET', 'TELEGRAM_BOT_TOKEN', 'FRONTEND_URL', 'BACKEND_URL', 'BSCSCAN_API_KEY', 'MASTER_SEED_PHRASE'];
     const missingVars = requiredVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
@@ -42,6 +41,9 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const treasuryRoutes = require('./routes/treasuryRoutes');
 const userRoutes = require('./routes/userRoutes');
+// --- INICIO DE MODIFICACIÓN ---
+const factoryRoutes = require('./routes/factoryRoutes'); // 1. Importar las nuevas rutas
+// --- FIN DE MODIFICACIÓN ---
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 // --- CONFIGURACIÓN DE EXPRESS Y MIDDLEWARES ---
@@ -49,7 +51,6 @@ const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 app.disable('etag');
-// MODIFICADO: Ya que el admin y el frontend usan la misma URL, solo necesitamos una en la whitelist.
 const whitelist = [process.env.FRONTEND_URL];
 const corsOptions = {
     origin: (origin, callback) => {
@@ -77,11 +78,13 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
+// --- INICIO DE MODIFICACIÓN ---
+app.use('/api/factories', factoryRoutes); // 2. Usar las nuevas rutas
+// --- FIN DE MODIFICACIÓN ---
 
 // =========================================================================
-// ================== LÓGICA DEL BOT DE TELEGRAM ===========================
+// ================== LÓGICA DEL BOT DE TELEGRAM (sin cambios) =============
 // =========================================================================
-
 const WELCOME_MESSAGE = `
 🤖 ¡Bienvenido a Mega Fábrica!\n\n
 🏭 Tu centro de operaciones para la producción digital. Conecta, construye y genera ingresos pasivos en USDT.\n

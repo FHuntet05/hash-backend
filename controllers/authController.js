@@ -1,12 +1,14 @@
-// RUTA: backend/src/controllers/authController.js (CON ASIGNACIÓN DE FÁBRICA GRATUITA)
+// RUTA: backend/src/controllers/authController.js (v2.0 - FOTO Y FÁBRICA CORREGIDAS)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
-const Factory = require('../models/factoryModel'); // <-- IMPORTACIÓN NECESARIA
+const Factory = require('../models/factoryModel');
 const jwt = require('jsonwebtoken');
+const axios = require('axios'); // <-- IMPORTACIÓN NECESARIA PARA LA API DE TELEGRAM
 const { getTemporaryPhotoUrl } = require('./userController');
 
 const PLACEHOLDER_AVATAR_URL = `${process.env.FRONTEND_URL}/assets/images/user-avatar-placeholder.png`;
+const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -24,6 +26,25 @@ const syncUser = async (req, res) => {
     try {
         let user = await User.findOne({ telegramId });
 
+        // --- INICIO DE CORRECCIÓN DE FOTO ---
+        let photoFileId = null;
+        try {
+            // Se hace una llamada a la API de Telegram para obtener las fotos de perfil del usuario
+            const profilePhotosResponse = await axios.get(`${TELEGRAM_API_URL}/getUserProfilePhotos`, {
+                params: { user_id: telegramId, limit: 1 }
+            });
+
+            // Si el usuario tiene fotos y la respuesta es exitosa...
+            if (profilePhotosResponse.data.ok && profilePhotosResponse.data.result.total_count > 0) {
+                // ...tomamos la foto de mayor resolución (la última en el array 'photos')
+                const photos = profilePhotosResponse.data.result.photos[0];
+                photoFileId = photos[photos.length - 1].file_id;
+            }
+        } catch (photoError) {
+            console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId} desde la API.`, photoError.message);
+        }
+        // --- FIN DE CORRECCIÓN DE FOTO ---
+
         if (!user) {
             // --- LÓGICA DE CREACIÓN DE NUEVO USUARIO ---
             console.log(`[Auth Sync] Creando nuevo usuario para Telegram ID: ${telegramId}`.cyan);
@@ -33,11 +54,11 @@ const syncUser = async (req, res) => {
                 telegramId,
                 username,
                 fullName: fullName || username,
-                language: telegramUser.language_code || 'es'
+                language: telegramUser.language_code || 'es',
+                photoFileId: photoFileId // Se guarda el file_id de la foto al crear
             });
 
-            // --- INICIO DE LA IMPLEMENTACIÓN DE FÁBRICA GRATUITA (Punto 8) ---
-            const freeFactory = await Factory.findOne({ isFree: true });
+            const freeFactory = await Factory.findOne({ isFree: true }).lean(); // .lean() para optimizar
             if (freeFactory) {
                 console.log(`[Auth Sync] Fábrica gratuita encontrada: "${freeFactory.name}". Asignando al nuevo usuario.`.green);
                 const purchaseDate = new Date();
@@ -48,30 +69,38 @@ const syncUser = async (req, res) => {
                     factory: freeFactory._id,
                     purchaseDate: purchaseDate,
                     expiryDate: expiryDate,
-                    lastClaim: purchaseDate // Se establece la fecha de compra para iniciar el ciclo de 24h
+                    lastClaim: purchaseDate
                 });
             } else {
-                console.warn('[Auth Sync] ADVERTENCIA: No se encontró ninguna fábrica marcada como "isFree". El usuario se creará sin fábrica inicial.'.yellow);
+                console.warn('[Auth Sync] ADVERTENCIA: No se encontró ninguna fábrica marcada como "isFree".'.yellow);
             }
-            // --- FIN DE LA IMPLEMENTACIÓN DE FÁBRICA GRATUITA ---
             
-            await user.save(); // Se guarda el usuario con su nueva fábrica.
+            await user.save();
 
         } else {
             // --- LÓGICA DE ACTUALIZACIÓN DE USUARIO EXISTENTE ---
             user.username = telegramUser.username || user.username;
             user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
-            await user.save(); // Se guardan los datos actualizados del perfil.
+            if (photoFileId) { // Solo actualiza la foto si se obtuvo una nueva
+                user.photoFileId = photoFileId;
+            }
+            await user.save();
         }
         
-        // Se pueblan los datos para la respuesta al frontend
+        // --- INICIO DE CORRECCIÓN DE POPULATE ---
+        // Se asegura de poblar completamente los detalles de la fábrica.
         const userWithDetails = await User.findById(user._id)
-            .populate('purchasedFactories.factory')
+            .populate({
+                path: 'purchasedFactories.factory',
+                model: 'Factory' // Es una buena práctica especificar el modelo
+            })
             .populate('referredBy', 'username fullName');
+        // --- FIN DE CORRECCIÓN DE POPULATE ---
 
         const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
         
         const userObject = userWithDetails.toObject();
+        // Se usa el photoFileId del usuario ya guardado en la DB para obtener la URL temporal
         userObject.photoUrl = await getTemporaryPhotoUrl(userObject.photoFileId) || PLACEHOLDER_AVATAR_URL;
         
         const token = generateToken(user._id);
