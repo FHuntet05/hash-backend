@@ -1,4 +1,4 @@
-// RUTA: backend/src/controllers/walletController.js (VERSIÓN CON BILLETERAS ÚNICAS)
+// RUTA: backend/controllers/walletController.js (v2.0 - LÓGICA DE CONTROL DE RETIRO)
 
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
@@ -6,46 +6,27 @@ const Factory = require('../models/factoryModel');
 const Transaction = require('../models/transactionModel');
 const Setting = require('../models/settingsModel');
 const { ethers } = require('ethers');
-// --- INICIO DE LA MODIFICACIÓN CLAVE ---
-// 1. Importamos la función de generación de billeteras desde el paymentController.
-const { getOrCreateUserBscWallet } = require('./paymentController'); 
-// --- FIN DE LA MODIFICACIÓN CLAVE ---
+const { getOrCreateUserBscWallet } = require('./paymentController');
 
 const FACTORY_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
 
-// --- FUNCIÓN DE DEPÓSITO RECONSTRUIDA ---
+// --- Funciones createDepositAddress, purchaseFactoryWithBalance, claimFactoryProduction (SIN CAMBIOS) ---
+
 const createDepositAddress = async (req, res) => {
     const userId = req.user.id;
-
-    // ELIMINADO: Ya no necesitamos el 'amount' del body.
-    // El sistema detectará cualquier cantidad que se deposite en la dirección única.
-
     try {
-        // --- INICIO DE LA MODIFICACIÓN CLAVE ---
-        // 2. Llamamos a la lógica importada para obtener/crear la billetera única del usuario.
         const userUniqueWalletAddress = await getOrCreateUserBscWallet(userId);
-        
-        // ELIMINADO: La creación de una transacción 'pending' aquí.
-        // El treasuryController se encargará de crear la transacción 'completed'
-        // cuando detecte el depósito real.
-
-        // 3. Devolvemos la información de la billetera única al usuario.
-        // El frontend ahora mostrará esta dirección para que el usuario deposite.
         res.status(200).json({
             paymentAddress: userUniqueWalletAddress,
-            // NOTA: El frontend deberá adaptarse para no requerir un 'paymentAmount'.
-            // Simplemente mostrará "Deposita USDT (BEP20) a la siguiente dirección:".
             currency: 'USDT',
             network: 'BEP20 (BSC)'
         });
-        // --- FIN DE LA MODIFICACIÓN CLAVE ---
     } catch (error) {
         console.error('Error en createDepositAddress:'.red, error);
         res.status(500).json({ message: 'Error al generar la dirección de depósito.' });
     }
 };
 
-// --- FUNCIÓN DE COMPRA DE FÁBRICA (SIN CAMBIOS) ---
 const purchaseFactoryWithBalance = async (req, res) => {
     const { factoryId, quantity = 1 } = req.body;
     const userId = req.user.id;
@@ -64,6 +45,11 @@ const purchaseFactoryWithBalance = async (req, res) => {
         }
 
         user.balance.usdt -= totalCost;
+        // Si el usuario tenía la restricción de comprar, se la quitamos
+        if(user.mustPurchaseToWithdraw) {
+            user.mustPurchaseToWithdraw = false;
+        }
+
         const now = new Date();
         for (let i = 0; i < quantity; i++) {
             user.purchasedFactories.push({ 
@@ -88,7 +74,6 @@ const purchaseFactoryWithBalance = async (req, res) => {
     }
 };
 
-// --- FUNCIÓN DE RECLAMO DE PRODUCCIÓN (SIN CAMBIOS) ---
 const claimFactoryProduction = async (req, res) => {
     const { purchasedFactoryId } = req.body;
     const userId = req.user.id;
@@ -123,18 +108,31 @@ const claimFactoryProduction = async (req, res) => {
     }
 };
 
-// --- FUNCIÓN DE SOLICITUD DE RETIRO (SIN CAMBIOS) ---
 const requestWithdrawal = async (req, res) => {
   const { amount, walletAddress, withdrawalPassword } = req.body;
   const userId = req.user.id;
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
+
+    // --- INICIO DE NUEVA LÓGICA DE VALIDACIÓN ---
     const settings = await Setting.findOne({ singleton: 'global_settings' }).session(session);
     if (!settings) throw new Error('La configuración del sistema no está disponible.');
-    
+
+    // 1. Verificar si los retiros están habilitados globalmente
+    if (!settings.withdrawalsEnabled) {
+      return res.status(403).json({ message: 'Los retiros están deshabilitados temporalmente por mantenimiento.' });
+    }
+
     const user = await User.findById(userId).select('+withdrawalPassword').session(session);
     if (!user) throw new Error('Usuario no encontrado.');
+
+    // 2. Verificar si el usuario está obligado a comprar
+    if (user.mustPurchaseToWithdraw) {
+      return res.status(403).json({ message: 'Debes comprar otra fábrica para poder retirar.' });
+    }
+    // --- FIN DE NUEVA LÓGICA DE VALIDACIÓN ---
+
     if (!user.isWithdrawalPasswordSet) return res.status(403).json({ message: 'Debes configurar una contraseña de retiro primero.' });
     if (!withdrawalPassword) return res.status(400).json({ message: 'La contraseña de retiro es obligatoria.' });
     const isMatch = await user.matchWithdrawalPassword(withdrawalPassword);
@@ -165,7 +163,6 @@ const requestWithdrawal = async (req, res) => {
   }
 };
 
-// --- FUNCIÓN DE HISTORIAL (SIN CAMBIOS) ---
 const getHistory = async (req, res) => {
   try {
     const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 }).limit(100);

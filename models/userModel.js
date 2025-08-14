@@ -1,5 +1,4 @@
-// RUTA: backend/models/userModel.js (v3.0 - Soporte para Tareas y Referidos por Nivel)
-
+// RUTA: backend/models/userModel.js (v4.0 - SOPORTE PARA FORZAR COMPRA)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -10,7 +9,6 @@ const transactionSchema = new mongoose.Schema({
     description: { type: String, required: true },
     status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'completed' },
 }, { timestamps: true });
-
 
 const userSchema = new mongoose.Schema({
     telegramId: { type: String, required: true, unique: true },
@@ -35,17 +33,11 @@ const userSchema = new mongoose.Schema({
     language: { type: String, default: 'es' },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     
-    // --- INICIO DE CAMBIO CRÍTICO: ESTRUCTURA DE REFERIDOS ---
-    // Ahora 'referrals' es un array de objetos, permitiendo almacenar el nivel.
-    // Esto es ESENCIAL para las tareas de invitación.
     referrals: [{
         user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
         level: { type: Number, required: true, enum: [1, 2, 3] }
     }],
-    // --- FIN DE CAMBIO CRÍTICO ---
-
-    // --- INICIO DE CAMBIO CRÍTICO: ESTADO DE TAREAS ---
-    // Añadimos los campos necesarios para rastrear el progreso y estado de las tareas.
+    
     claimedTasks: {
         type: Map,
         of: Boolean,
@@ -55,7 +47,6 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
-    // --- FIN DE CAMBIO CRÍTICO ---
     
     withdrawalPassword: {
         type: String,
@@ -65,6 +56,17 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false,
     },
+
+    // --- INICIO DE NUEVO CAMPO ---
+    /**
+     * Si es 'true', el usuario no podrá retirar hasta que compre una nueva fábrica.
+     * Un administrador puede activar este flag manualmente.
+     */
+    mustPurchaseToWithdraw: {
+      type: Boolean,
+      default: false
+    },
+    // --- FIN DE NUEVO CAMPO ---
     
 }, { timestamps: true });
 

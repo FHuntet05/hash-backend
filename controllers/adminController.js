@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/adminController.js (v44.0 - updateUser EXPANDIDO)
+// RUTA: backend/controllers/adminController.js (v45.0 - GESTIÓN DE mustPurchaseToWithdraw - CÓDIGO COMPLETO)
 
 const User = require('../models/userModel');
 const Transaction = require('../models/transactionModel');
@@ -58,10 +58,9 @@ const getUserDetails = asyncHandler(async (req, res) => { const { id } = req.par
 const adjustUserBalance = asyncHandler(async (req, res) => { const { id } = req.params; const { type, currency, amount, reason } = req.body; if (!['admin_credit', 'admin_debit'].includes(type) || !['USDT'].includes(currency) || !amount || !reason) { res.status(400); throw new Error("Parámetros inválidos. Moneda debe ser USDT."); } const session = await mongoose.startSession(); try { session.startTransaction(); const currencyKey = currency.toLowerCase(); let updateOperation = {}; if (type === 'admin_credit') { updateOperation = { $inc: { [`balance.${currencyKey}`]: amount, totalRecharge: amount } }; } else { const userCheck = await User.findById(id).select(`balance.${currencyKey}`).session(session); if (!userCheck || (userCheck.balance[currencyKey] || 0) < amount) { throw new Error('Saldo insuficiente para realizar el débito.'); } updateOperation = { $inc: { [`balance.${currencyKey}`]: -amount } }; } const user = await User.findByIdAndUpdate(id, updateOperation, { new: true, session }); if (!user) throw new Error('Usuario no encontrado.'); const transaction = new Transaction({ user: id, type, currency, amount, status: 'completed', description: reason, metadata: { adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(200).json({ message: 'Saldo ajustado exitosamente.', user }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
 const getAllUsers = asyncHandler(async (req, res) => { const pageSize = 10; const page = Number(req.query.page) || 1; const filter = req.query.search ? { $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] } : {}; const count = await User.countDocuments(filter); const users = await User.find(filter).select('username telegramId role status createdAt balance.usdt photoFileId').sort({ createdAt: -1 }).limit(pageSize).skip(pageSize * (page - 1)).lean(); const usersWithPhotoUrl = await Promise.all(users.map(async (user) => ({ ...user, photoUrl: await getTemporaryPhotoUrl(user.photoFileId) || PLACEHOLDER_AVATAR_URL }))); res.json({ users: usersWithPhotoUrl, page, pages: Math.ceil(count / pageSize), totalUsers: count }); });
 
-// --- INICIO DE LA MODIFICACIÓN CRÍTICA ---
 const updateUser = asyncHandler(async (req, res) => {
-    // Se extraen los nuevos campos del body de la petición
-    const { username, password, balanceUsdt } = req.body;
+    // Se extraen todos los campos posibles del body de la petición
+    const { username, password, balanceUsdt, mustPurchaseToWithdraw } = req.body;
     const user = await User.findById(req.params.id);
 
     if (!user) {
@@ -69,9 +68,17 @@ const updateUser = asyncHandler(async (req, res) => {
         throw new Error('Usuario no encontrado.');
     }
 
-    // Se actualizan los campos solo si se proporcionan en la petición
+    // Se actualizan los campos solo si se proporcionan en la petición.
+    // El operador 'nullish coalescing' (??) asegura que si el valor es undefined o null, se mantiene el valor existente.
+    // Esto previene que campos no enviados en el formulario borren datos existentes.
     user.username = username ?? user.username;
     user.balance.usdt = balanceUsdt ?? user.balance.usdt;
+    
+    // Se añade el manejo del nuevo flag 'mustPurchaseToWithdraw'.
+    // Importante: Si se envía `false` desde el frontend, se actualizará a `false`.
+    if (mustPurchaseToWithdraw !== undefined && typeof mustPurchaseToWithdraw === 'boolean') {
+      user.mustPurchaseToWithdraw = mustPurchaseToWithdraw;
+    }
 
     // Si se proporciona una nueva contraseña, se actualiza.
     // El hook pre-save de userModel se encargará de hashearla automáticamente.
@@ -86,7 +93,6 @@ const updateUser = asyncHandler(async (req, res) => {
     const updatedUser = await user.save();
     res.json(updatedUser);
 });
-// --- FIN DE LA MODIFICACIÓN CRÍTICA ---
 
 const setUserStatus = asyncHandler(async (req, res) => { const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user._id.equals(req.user._id)) { res.status(400); throw new Error('No puedes cambiar tu propio estado.'); } user.status = req.body.status; const updatedUser = await user.save(); res.json(updatedUser); });
 const getAllTransactions = asyncHandler(async (req, res) => { const pageSize = 15; const page = Number(req.query.page) || 1; let filter = {}; if (req.query.type) { filter.type = req.query.type; } if (req.query.search) { const usersFound = await User.find({ $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] }).select('_id'); filter.user = { $in: usersFound.map(user => user._id) }; } const count = await Transaction.countDocuments(filter); const transactions = await Transaction.find(filter).sort({ createdAt: -1 }).populate('user', 'username telegramId').limit(pageSize).skip(pageSize * (page - 1)).lean(); res.json({ transactions, page, pages: Math.ceil(count / pageSize), totalTransactions: count }); });
