@@ -1,38 +1,49 @@
-// RUTA: backend/src/controllers/userController.js (CON LÓGICA DE CONTRASEÑA DE RETIRO)
+// RUTA: backend/src/controllers/userController.js (VERSIÓN FINAL - SOLO TELEGRAM API)
 
+const axios = require('axios');
 const User = require('../models/userModel');
-const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
-// ... (configuración de S3 y getTemporaryPhotoUrl se mantienen)
-const s3Client = new S3Client({
-    region: process.env.AWS_REGION,
-    credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+// --- CÓDIGO DE S3 COMPLETAMENTE ELIMINADO ---
+// No hay 'require('@aws-sdk/client-s3')'. Esto resuelve el error de build.
+
+const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+
+/**
+ * @desc    Obtiene la URL de descarga temporal de una foto de perfil de Telegram.
+ * @param   {string} photoFileId - El file_id permanente de la foto.
+ * @returns {Promise<string|null>} La URL temporal o null si falla.
+ */
+const getTemporaryPhotoUrl = async (photoFileId) => {
+    if (!photoFileId) {
+        return null; // Si el usuario no tiene foto, no hacemos nada.
     }
-});
-
-const getTemporaryPhotoUrl = async (fileId) => {
-    if (!fileId) return null;
     try {
-        const command = new GetObjectCommand({
-            Bucket: process.env.AWS_S3_BUCKET_NAME,
-            Key: fileId,
+        // 1. Pedimos a la API de Telegram la información del archivo usando su file_id
+        const fileInfoResponse = await axios.get(`${TELEGRAM_API_URL}/getFile`, {
+            params: { file_id: photoFileId }
         });
-        const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 }); // URL válida por 1 hora
-        return url;
+
+        if (!fileInfoResponse.data.ok) {
+            console.error(`[PHOTO] Error: Telegram API no pudo obtener info del archivo para file_id: ${photoFileId}.`, fileInfoResponse.data);
+            return null;
+        }
+
+        // 2. Construimos la URL de descarga final con el file_path que nos dio la API
+        const filePath = fileInfoResponse.data.result.file_path;
+        return `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${filePath}`;
+        
     } catch (error) {
-        console.error("Error generando URL firmada para S3:", error);
+        console.error(`[PHOTO] CATCH: Error al resolver la foto de Telegram para el file_id ${photoFileId}:`, error.message);
         return null;
     }
 };
 
-
-// --- INICIO DE LA NUEVA FUNCIÓN ---
-
+/**
+ * @desc    Establece o cambia la contraseña de retiro de un usuario.
+ * @route   POST /api/users/withdrawal-password
+ * @access  Private
+ */
 const setWithdrawalPassword = async (req, res) => {
-    // El ID del usuario se obtiene del token JWT, gracias a nuestro 'authMiddleware'
     const userId = req.user.id;
     const { currentPassword, newPassword } = req.body;
 
@@ -41,13 +52,11 @@ const setWithdrawalPassword = async (req, res) => {
     }
 
     try {
-        // Seleccionamos explícitamente los campos protegidos para poder usarlos
         const user = await User.findById(userId).select('+withdrawalPassword +isWithdrawalPasswordSet');
         if (!user) {
             return res.status(404).json({ message: 'Usuario no encontrado.' });
         }
 
-        // Si el usuario ya tiene una contraseña, verificamos la actual
         if (user.isWithdrawalPasswordSet) {
             if (!currentPassword) {
                 return res.status(400).json({ message: 'La contraseña actual es obligatoria para realizar el cambio.' });
@@ -58,14 +67,11 @@ const setWithdrawalPassword = async (req, res) => {
             }
         }
 
-        // Si todo es correcto, establecemos la nueva contraseña
         user.withdrawalPassword = newPassword;
         user.isWithdrawalPasswordSet = true;
         await user.save();
         
-        // Devolvemos el usuario actualizado (sin los campos de contraseña)
         const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
-
         res.status(200).json({
             message: 'Contraseña de retiro actualizada con éxito.',
             user: updatedUser
@@ -77,9 +83,7 @@ const setWithdrawalPassword = async (req, res) => {
     }
 };
 
-// --- FIN DE LA NUEVA FUNCIÓN ---
-
-// Se exporta la nueva función junto con las existentes
+// Se exportan las funciones. La función `getUserPhoto` que solo redirigía se ha eliminado por ser redundante.
 module.exports = {
     getTemporaryPhotoUrl,
     setWithdrawalPassword 

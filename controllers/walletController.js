@@ -1,4 +1,4 @@
-// RUTA: backend/src/controllers/walletController.js (VERSIÓN DEFINITIVA MEGA FÁBRICA)
+// RUTA: backend/src/controllers/walletController.js (VERSIÓN CON BILLETERAS ÚNICAS)
 
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
@@ -6,48 +6,46 @@ const Factory = require('../models/factoryModel');
 const Transaction = require('../models/transactionModel');
 const Setting = require('../models/settingsModel');
 const { ethers } = require('ethers');
+// --- INICIO DE LA MODIFICACIÓN CLAVE ---
+// 1. Importamos la función de generación de billeteras desde el paymentController.
+const { getOrCreateUserBscWallet } = require('./paymentController'); 
+// --- FIN DE LA MODIFICACIÓN CLAVE ---
 
 const FACTORY_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
 
-// --- FUNCIÓN DE DEPÓSITO DIRECTO ---
+// --- FUNCIÓN DE DEPÓSITO RECONSTRUIDA ---
 const createDepositAddress = async (req, res) => {
     const userId = req.user.id;
-    const { amount } = req.body;
 
-    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
-        return res.status(400).json({ message: 'Se requiere una cantidad válida para el depósito.' });
-    }
+    // ELIMINADO: Ya no necesitamos el 'amount' del body.
+    // El sistema detectará cualquier cantidad que se deposite en la dirección única.
 
     try {
-        const centralWalletAddress = process.env.CENTRAL_DEPOSIT_WALLET_ADDRESS;
-        if (!centralWalletAddress) {
-            console.error("CRITICAL ERROR: CENTRAL_DEPOSIT_WALLET_ADDRESS no está configurada en .env".red);
-            return res.status(500).json({ message: 'Error de configuración del sistema.' });
-        }
+        // --- INICIO DE LA MODIFICACIÓN CLAVE ---
+        // 2. Llamamos a la lógica importada para obtener/crear la billetera única del usuario.
+        const userUniqueWalletAddress = await getOrCreateUserBscWallet(userId);
         
-        await Transaction.create({
-            user: userId,
-            type: 'deposit',
-            status: 'pending',
-            amount: parseFloat(amount),
-            currency: 'USDT',
-            description: `Depósito pendiente de ${amount} USDT a la billetera central`,
-            metadata: { depositAddress: centralWalletAddress, expectedAmount: amount }
-        });
+        // ELIMINADO: La creación de una transacción 'pending' aquí.
+        // El treasuryController se encargará de crear la transacción 'completed'
+        // cuando detecte el depósito real.
 
-        res.status(201).json({
-            paymentAddress: centralWalletAddress,
-            paymentAmount: amount.toString(),
+        // 3. Devolvemos la información de la billetera única al usuario.
+        // El frontend ahora mostrará esta dirección para que el usuario deposite.
+        res.status(200).json({
+            paymentAddress: userUniqueWalletAddress,
+            // NOTA: El frontend deberá adaptarse para no requerir un 'paymentAmount'.
+            // Simplemente mostrará "Deposita USDT (BEP20) a la siguiente dirección:".
             currency: 'USDT',
-            network: 'BEP20'
+            network: 'BEP20 (BSC)'
         });
+        // --- FIN DE LA MODIFICACIÓN CLAVE ---
     } catch (error) {
         console.error('Error en createDepositAddress:'.red, error);
-        res.status(500).json({ message: 'Error al generar la información de depósito.' });
+        res.status(500).json({ message: 'Error al generar la dirección de depósito.' });
     }
 };
 
-// --- FUNCIÓN DE COMPRA DE FÁBRICA ---
+// --- FUNCIÓN DE COMPRA DE FÁBRICA (SIN CAMBIOS) ---
 const purchaseFactoryWithBalance = async (req, res) => {
     const { factoryId, quantity = 1 } = req.body;
     const userId = req.user.id;
@@ -90,7 +88,7 @@ const purchaseFactoryWithBalance = async (req, res) => {
     }
 };
 
-// --- FUNCIÓN DE RECLAMO DE PRODUCCIÓN ---
+// --- FUNCIÓN DE RECLAMO DE PRODUCCIÓN (SIN CAMBIOS) ---
 const claimFactoryProduction = async (req, res) => {
     const { purchasedFactoryId } = req.body;
     const userId = req.user.id;
@@ -125,7 +123,7 @@ const claimFactoryProduction = async (req, res) => {
     }
 };
 
-// --- FUNCIÓN DE SOLICITUD DE RETIRO (CON CONTRASEÑA) ---
+// --- FUNCIÓN DE SOLICITUD DE RETIRO (SIN CAMBIOS) ---
 const requestWithdrawal = async (req, res) => {
   const { amount, walletAddress, withdrawalPassword } = req.body;
   const userId = req.user.id;
@@ -167,7 +165,7 @@ const requestWithdrawal = async (req, res) => {
   }
 };
 
-// --- FUNCIÓN DE HISTORIAL ---
+// --- FUNCIÓN DE HISTORIAL (SIN CAMBIOS) ---
 const getHistory = async (req, res) => {
   try {
     const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 }).limit(100);

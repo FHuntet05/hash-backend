@@ -11,7 +11,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.864.0",
     "@telegram-apps/init-data-node": "^2.0.10",
     "axios": "^1.7.2",
     "bcryptjs": "^2.4.3",
