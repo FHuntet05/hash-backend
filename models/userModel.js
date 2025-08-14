@@ -1,15 +1,10 @@
-// RUTA: backend/src/models/userModel.js (v2.0 - SUBDOCUMENTO ELIMINADO)
+// RUTA: backend/models/userModel.js (v3.0 - Soporte para Tareas y Referidos por Nivel)
 
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-// --- INICIO DE CORRECCIÓN CRÍTICA ---
-// Se elimina el `purchasedFactorySchema` como una constante separada.
-// --- FIN DE CORRECCIÓN CRÍTICA ---
-
-// El transactionSchema no causa problemas, se puede mantener.
 const transactionSchema = new mongoose.Schema({
-    type: { type: String, enum: ['deposit', 'withdrawal', 'purchase', 'swap_ntx_to_usdt', 'mining_claim', 'referral_commission', 'task_reward'], required: true },
+    type: { type: String, enum: ['deposit', 'withdrawal', 'purchase', 'referral_commission', 'task_reward'], required: true },
     amount: { type: Number, required: true },
     currency: { type: String, required: true, default: 'USDT' },
     description: { type: String, required: true },
@@ -26,28 +21,41 @@ const userSchema = new mongoose.Schema({
     passwordResetRequired: { type: Boolean, default: false },
     balance: {
         usdt: { type: Number, default: 0 },
-        ntx: { type: Number, default: 0 }, // Mantener por si se usa en otro lado, pero se puede limpiar
-    },
-    productionBalance: { // Campo obsoleto, se puede limpiar en el futuro
-        usdt: { type: Number, default: 0 },
-        ntx: { type: Number, default: 0 },
     },
     
-    // --- INICIO DE CORRECCIÓN CRÍTICA ---
-    // Se define la estructura directamente aquí. Esto es más robusto.
     purchasedFactories: [{
         factory: { type: mongoose.Schema.Types.ObjectId, ref: 'Factory', required: true },
         purchaseDate: { type: Date, required: true },
         expiryDate: { type: Date, required: true },
-        lastClaim: { type: Date, required: true }, // Se hace requerido para consistencia
+        lastClaim: { type: Date, required: true },
     }],
-    // --- FIN DE CORRECCIÓN CRÍTICA ---
 
     transactions: [transactionSchema],
     photoFileId: { type: String },
     language: { type: String, default: 'es' },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    referrals: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Esto debería ser un array de objetos con más info
+    
+    // --- INICIO DE CAMBIO CRÍTICO: ESTRUCTURA DE REFERIDOS ---
+    // Ahora 'referrals' es un array de objetos, permitiendo almacenar el nivel.
+    // Esto es ESENCIAL para las tareas de invitación.
+    referrals: [{
+        user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        level: { type: Number, required: true, enum: [1, 2, 3] }
+    }],
+    // --- FIN DE CAMBIO CRÍTICO ---
+
+    // --- INICIO DE CAMBIO CRÍTICO: ESTADO DE TAREAS ---
+    // Añadimos los campos necesarios para rastrear el progreso y estado de las tareas.
+    claimedTasks: {
+        type: Map,
+        of: Boolean,
+        default: {}
+    },
+    telegramVisited: {
+        type: Boolean,
+        default: false
+    },
+    // --- FIN DE CAMBIO CRÍTICO ---
     
     withdrawalPassword: {
         type: String,
