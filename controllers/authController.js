@@ -1,4 +1,4 @@
-// RUTA: backend/src/controllers/authController.js (v4.0 - ASIGNACIÓN DIRECTA DE FÁBRICA)
+// RUTA: backend/src/controllers/authController.js (v5.0 - LÓGICA AUTOCURABLE)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
@@ -24,8 +24,7 @@ const syncUser = async (req, res) => {
     const telegramId = telegramUser.id.toString();
 
     try {
-        let userFromDB = await User.findOne({ telegramId });
-        let userForResponse;
+        let user = await User.findOne({ telegramId });
 
         let photoFileId = null;
         try {
@@ -40,72 +39,58 @@ const syncUser = async (req, res) => {
             console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId}.`, photoError.message);
         }
 
-        if (!userFromDB) {
-            console.log(`[Auth Sync] Creando nuevo usuario para Telegram ID: ${telegramId}`.cyan);
+        // El bloque if (!user) ahora es un caso de borde, la creación principal está en el bot.
+        // Lo mantenemos por seguridad.
+        if (!user) {
+            console.warn(`[Auth Sync] Usuario no encontrado en sync, creando desde cero (caso de borde)...`.yellow);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
-            
-            // --- INICIO DE CORRECCIÓN CRÍTICA DE ASIGNACIÓN ---
-            const initialFactories = []; // 1. Crear un array JS normal
+            const initialFactories = [];
             const freeFactory = await Factory.findOne({ isFree: true }).lean();
             if (freeFactory) {
-                console.log(`[Auth Sync] Fábrica gratuita encontrada: "${freeFactory.name}". Preparando para asignar...`.green);
                 const purchaseDate = new Date();
                 const expiryDate = new Date(purchaseDate);
                 expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
-
-                // 2. Añadir la fábrica al array normal
-                initialFactories.push({
-                    factory: freeFactory._id,
-                    purchaseDate: purchaseDate,
-                    expiryDate: expiryDate,
-                    lastClaim: purchaseDate
-                });
-            } else {
-                console.warn('[Auth Sync] ADVERTENCIA: No se encontró fábrica "isFree".'.yellow);
+                initialFactories.push({ factory: freeFactory._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
             }
-
-            const newUser = new User({
-                telegramId,
-                username,
-                fullName: fullName || username,
-                language: telegramUser.language_code || 'es',
-                photoFileId: photoFileId,
-                purchasedFactories: initialFactories // 3. Asignar el array completo directamente en la creación
-            });
-            // --- FIN DE CORRECCIÓN CRÍTICA DE ASIGNACIÓN ---
+            user = new User({ telegramId, username, fullName, language: telegramUser.language_code || 'es', photoFileId, purchasedFactories: initialFactories });
             
-            const savedUser = await newUser.save();
-            
-            console.log(`[Auth Sync] Usuario ${savedUser._id} guardado. Rebuscando y poblando para asegurar consistencia...`);
-            userForResponse = await User.findById(savedUser._id)
-                .populate({
-                    path: 'purchasedFactories.factory',
-                    model: 'Factory'
-                })
-                .populate('referredBy', 'username fullName');
-
         } else {
-            userFromDB.username = telegramUser.username || userFromDB.username;
-            userFromDB.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || userFromDB.fullName;
-            if (photoFileId) {
-                userFromDB.photoFileId = photoFileId;
+            // --- INICIO DE LÓGICA AUTOCURABLE ---
+            // Si el usuario existe pero por alguna razón no tiene fábricas, le asignamos la gratuita.
+            if (!user.purchasedFactories || user.purchasedFactories.length === 0) {
+                const freeFactory = await Factory.findOne({ isFree: true }).lean();
+                if (freeFactory) {
+                    console.log(`[Auth Sync] Usuario existente ${user.username} no tenía fábricas. Asignando la gratuita...`.yellow);
+                    const purchaseDate = new Date();
+                    const expiryDate = new Date(purchaseDate);
+                    expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
+                    user.purchasedFactories.push({
+                        factory: freeFactory._id,
+                        purchaseDate,
+                        expiryDate,
+                        lastClaim: purchaseDate
+                    });
+                }
             }
-            const updatedUser = await userFromDB.save();
-            
-            userForResponse = await User.findById(updatedUser._id)
-                .populate({
-                    path: 'purchasedFactories.factory',
-                    model: 'Factory'
-                })
-                .populate('referredBy', 'username fullName');
+            // --- FIN DE LÓGICA AUTOCURABLE ---
         }
+
+        // Actualizamos los datos del perfil y guardamos
+        user.username = telegramUser.username || user.username;
+        user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
+        if (photoFileId) user.photoFileId = photoFileId;
+        
+        await user.save();
+        
+        // Poblamos los datos para la respuesta final
+        const userForResponse = await User.findById(user._id)
+            .populate({ path: 'purchasedFactories.factory', model: 'Factory' })
+            .populate('referredBy', 'username fullName');
         
         const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
-        
         const userObject = userForResponse.toObject();
         userObject.photoUrl = await getTemporaryPhotoUrl(userObject.photoFileId) || PLACEHOLDER_AVATAR_URL;
-        
         const token = generateToken(userForResponse._id);
 
         res.status(200).json({ token, user: userObject, settings });

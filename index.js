@@ -1,4 +1,4 @@
-// backend/index.js (VERSIÓN MEGA FÁBRICA v1.2 - RUTAS DE FÁBRICA INTEGRADAS)
+// backend/index.js (v1.3 - CREACIÓN DE USUARIO CON FÁBRICA EN EL BOT)
 
 // --- IMPORTS Y CONFIGURACIÓN INICIAL ---
 const express = require('express');
@@ -10,6 +10,7 @@ const dotenv = require('dotenv');
 const colors = require('colors');
 const connectDB = require('./config/db');
 const User = require('./models/userModel');
+const Factory = require('./models/factoryModel'); // <-- 1. IMPORTAR FACTORY MODEL
 const { startMonitoring } = require('./services/transactionMonitor.js');
 
 console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA...');
@@ -41,9 +42,7 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const treasuryRoutes = require('./routes/treasuryRoutes');
 const userRoutes = require('./routes/userRoutes');
-// --- INICIO DE MODIFICACIÓN ---
-const factoryRoutes = require('./routes/factoryRoutes'); // 1. Importar las nuevas rutas
-// --- FIN DE MODIFICACIÓN ---
+const factoryRoutes = require('./routes/factoryRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 // --- CONFIGURACIÓN DE EXPRESS Y MIDDLEWARES ---
@@ -78,13 +77,12 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
-// --- INICIO DE MODIFICACIÓN ---
-app.use('/api/factories', factoryRoutes); // 2. Usar las nuevas rutas
-// --- FIN DE MODIFICACIÓN ---
+app.use('/api/factories', factoryRoutes);
 
 // =========================================================================
-// ================== LÓGICA DEL BOT DE TELEGRAM (sin cambios) =============
+// ================== LÓGICA DEL BOT DE TELEGRAM ===========================
 // =========================================================================
+
 const WELCOME_MESSAGE = `
 🤖 ¡Bienvenido a Mega Fábrica!\n\n
 🏭 Tu centro de operaciones para la producción digital. Conecta, construye y genera ingresos pasivos en USDT.\n
@@ -113,14 +111,42 @@ bot.command('start', async (ctx) => {
             }
         }
         
-        console.log(`[Bot /start] Petición de inicio. Usuario: ${referredId}. Potencial Referente: ${referrerId}`.cyan);
+        console.log(`[Bot /start] Petición de inicio. Usuario: ${referredId}. Referente: ${referrerId}`.cyan);
 
         let referredUser = await User.findOne({ telegramId: referredId });
         if (!referredUser) {
+            console.log(`[Bot /start] Usuario no encontrado. Creando nuevo perfil para ${referredId}.`);
             const username = ctx.from.username || `user_${referredId}`;
             const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
-            referredUser = new User({ telegramId: referredId, username, fullName: fullName || username, language: ctx.from.language_code || 'es' });
+            
+            // --- INICIO DE CORRECCIÓN CRÍTICA ---
+            const initialFactories = [];
+            const freeFactory = await Factory.findOne({ isFree: true }).lean();
+            if (freeFactory) {
+                console.log(`[Bot /start] Asignando fábrica gratuita "${freeFactory.name}" al nuevo usuario.`.green);
+                const purchaseDate = new Date();
+                const expiryDate = new Date(purchaseDate);
+                expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
+                initialFactories.push({
+                    factory: freeFactory._id,
+                    purchaseDate: purchaseDate,
+                    expiryDate: expiryDate,
+                    lastClaim: purchaseDate
+                });
+            } else {
+                console.warn('[Bot /start] ADVERTENCIA: No se encontró fábrica "isFree".'.yellow);
+            }
+            
+            referredUser = new User({ 
+                telegramId: referredId, 
+                username, 
+                fullName: fullName || username, 
+                language: ctx.from.language_code || 'es',
+                purchasedFactories: initialFactories // Asignación directa
+            });
+            // --- FIN DE CORRECIÓN CRÍTICA ---
         }
+        
         const canBeReferred = referrerId && referrerId !== referredId && !referredUser.referredBy;
         if (canBeReferred) {
             const referrerUser = await User.findOne({ telegramId: referrerId });
