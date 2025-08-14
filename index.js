@@ -1,6 +1,6 @@
-// backend/index.js (v1.3 - CREACIÓN DE USUARIO CON FÁBRICA EN EL BOT)
+// RUTA: backend/index.js (v1.4 - LÓGICA DE REFERIDOS CORREGIDA)
 
-// --- IMPORTS Y CONFIGURACIÓN INICIAL ---
+// --- IMPORTS Y CONFIGURACIÓN INICIAL (SIN CAMBIOS) ---
 const express = require('express');
 const cors = require('cors');
 const { Telegraf, Markup } = require('telegraf');
@@ -10,13 +10,12 @@ const dotenv = require('dotenv');
 const colors = require('colors');
 const connectDB = require('./config/db');
 const User = require('./models/userModel');
-const Factory = require('./models/factoryModel'); // <-- 1. IMPORTAR FACTORY MODEL
+const Factory = require('./models/factoryModel');
 const { startMonitoring } = require('./services/transactionMonitor.js');
 
 console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA...');
 dotenv.config();
 
-// --- VERIFICACIÓN DE VARIABLES DE ENTORNO ---
 function checkEnvVariables() {
     console.log('[SISTEMA] Verificando variables de entorno críticas...');
     const requiredVars = ['MONGO_URI', 'JWT_SECRET', 'TELEGRAM_BOT_TOKEN', 'FRONTEND_URL', 'BACKEND_URL', 'BSCSCAN_API_KEY', 'MASTER_SEED_PHRASE'];
@@ -29,10 +28,8 @@ function checkEnvVariables() {
 }
 checkEnvVariables();
 
-// --- CONEXIÓN A BASE DE DATOS ---
 connectDB();
 
-// --- IMPORTACIÓN DE RUTAS DE LA API ---
 const authRoutes = require('./routes/authRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
@@ -45,7 +42,6 @@ const userRoutes = require('./routes/userRoutes');
 const factoryRoutes = require('./routes/factoryRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
-// --- CONFIGURACIÓN DE EXPRESS Y MIDDLEWARES ---
 const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -66,7 +62,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// --- REGISTRO DE RUTAS DE LA API ---
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/ranking', rankingRoutes);
@@ -79,9 +74,6 @@ app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/factories', factoryRoutes);
 
-// =========================================================================
-// ================== LÓGICA DEL BOT DE TELEGRAM ===========================
-// =========================================================================
 
 const WELCOME_MESSAGE = `
 🤖 ¡Bienvenido a Mega Fábrica!\n\n
@@ -113,17 +105,18 @@ bot.command('start', async (ctx) => {
         
         console.log(`[Bot /start] Petición de inicio. Usuario: ${referredId}. Referente: ${referrerId}`.cyan);
 
-        let referredUser = await User.findOne({ telegramId: referredId });
-        if (!referredUser) {
+        let user = await User.findOne({ telegramId: referredId });
+        let isNewUser = false;
+
+        if (!user) {
+            isNewUser = true;
             console.log(`[Bot /start] Usuario no encontrado. Creando nuevo perfil para ${referredId}.`);
             const username = ctx.from.username || `user_${referredId}`;
             const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
             
-            // --- INICIO DE CORRECCIÓN CRÍTICA ---
             const initialFactories = [];
             const freeFactory = await Factory.findOne({ isFree: true }).lean();
             if (freeFactory) {
-                console.log(`[Bot /start] Asignando fábrica gratuita "${freeFactory.name}" al nuevo usuario.`.green);
                 const purchaseDate = new Date();
                 const expiryDate = new Date(purchaseDate);
                 expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
@@ -137,29 +130,41 @@ bot.command('start', async (ctx) => {
                 console.warn('[Bot /start] ADVERTENCIA: No se encontró fábrica "isFree".'.yellow);
             }
             
-            referredUser = new User({ 
+            user = new User({ 
                 telegramId: referredId, 
                 username, 
                 fullName: fullName || username, 
                 language: ctx.from.language_code || 'es',
-                purchasedFactories: initialFactories // Asignación directa
+                purchasedFactories: initialFactories
             });
-            // --- FIN DE CORRECIÓN CRÍTICA ---
+            // --- INICIO DE CORRECCIÓN CRÍTICA DE LÓGICA ---
+            // 1. Guardamos al nuevo usuario INMEDIATAMENTE para obtener un _id válido.
+            await user.save();
+            console.log(`[Bot /start] Nuevo usuario ${referredId} guardado en la BD.`);
+            // --- FIN DE CORRECCIÓN CRÍTICA DE LÓGICA ---
         }
         
-        const canBeReferred = referrerId && referrerId !== referredId && !referredUser.referredBy;
+        // La lógica de referidos ahora se ejecuta después de asegurar que el usuario existe en la BD.
+        const canBeReferred = referrerId && referrerId !== referredId && !user.referredBy;
         if (canBeReferred) {
             const referrerUser = await User.findOne({ telegramId: referrerId });
             if (referrerUser) {
-                referredUser.referredBy = referrerUser._id;
-                if (!referrerUser.referrals.some(ref => ref.user.equals(referredUser._id))) {
-                    referrerUser.referrals.push({ level: 1, user: referredUser._id });
+                user.referredBy = referrerUser._id;
+                // Verificamos que no se añada dos veces (aunque la lógica de canBeReferred ya lo previene)
+                if (!referrerUser.referrals.some(ref => ref.user.equals(user._id))) {
+                    referrerUser.referrals.push({ level: 1, user: user._id });
                     await referrerUser.save();
+                    console.log(`[Bot /start] Usuario ${referredId} enlazado al referente ${referrerId}.`);
                 }
             }
         }
-        await referredUser.save();
-        console.log(`[Bot /start] Perfil del usuario ${referredId} guardado/actualizado en la BD.`);
+
+        // Si el usuario no era nuevo, guardamos cualquier posible cambio (como el referredBy)
+        if (!isNewUser) {
+            await user.save();
+        }
+        
+        console.log(`[Bot /start] Perfil del usuario ${referredId} finalizado.`);
         
         const imageUrl = 'https://i.postimg.cc/8PqYj4zR/nicebot.jpg';
         const webAppUrl = process.env.FRONTEND_URL;
@@ -180,13 +185,13 @@ bot.command('start', async (ctx) => {
     }
 });
 
-// --- CONFIGURACIÓN DE COMANDOS Y WEBHOOK ---
+// --- CONFIGURACIÓN DE COMANDOS Y WEBHOOK (SIN CAMBIOS) ---
 bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
 const secretPath = `/api/telegram-webhook/${secretToken}`;
 app.post(secretPath, (req, res) => bot.handleUpdate(req.body, res));
 
-// --- MIDDLEWARES DE ERROR Y ARRANQUE DEL SERVIDOR ---
+// --- MIDDLEWARES DE ERROR Y ARRANQUE DEL SERVIDOR (SIN CAMBIOS) ---
 app.use(notFound);
 app.use(errorHandler);
 
