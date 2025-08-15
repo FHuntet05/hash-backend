@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/taskController.js (v27.0 - TAREAS REINICIABLES)
+// RUTA: backend/controllers/taskController.js (v27.1 - BLINDADO CONTRA ERROR DE VALIDACIÓN)
 const asyncHandler = require('express-async-handler');
 const User = require('../models/userModel.js');
 const Factory = require('../models/factoryModel.js'); 
@@ -27,7 +27,7 @@ const getTaskStatus = asyncHandler(async (req, res) => {
     const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
 
     const responseTasks = [];
-    let lastClaimedReferralCount = 0; // El contador empieza en cero
+    let lastClaimedReferralCount = 0;
 
     for (const taskId of Object.keys(TASKS_CONFIG)) {
         const task = TASKS_CONFIG[taskId];
@@ -42,7 +42,7 @@ const getTaskStatus = asyncHandler(async (req, res) => {
             if (inviteIndex > 0) {
                 const previousTaskId = INVITE_ORDER[inviteIndex - 1];
                 const prevTaskData = user.claimedTasks.get(previousTaskId);
-                if (prevTaskData) {
+                if (prevTaskData && prevTaskData.claimed) {
                     lastClaimedReferralCount = prevTaskData.referralCountAtClaim;
                 } else {
                     previousTaskClaimed = false;
@@ -52,7 +52,6 @@ const getTaskStatus = asyncHandler(async (req, res) => {
             if (!previousTaskClaimed) {
                 status = 'LOCKED';
             } else {
-                // --- LÓGICA DE PROGRESO REINICIADO ---
                 progress = Math.max(0, level1ReferralCount - lastClaimedReferralCount);
                 const isCompleted = progress >= task.target;
 
@@ -62,7 +61,7 @@ const getTaskStatus = asyncHandler(async (req, res) => {
                     status = 'COMPLETED_NOT_CLAIMED';
                 }
             }
-        } else { // Para tareas no relacionadas con invitaciones
+        } else {
             let isCompleted = false;
             if (taskId === 'FIRST_PURCHASE') isCompleted = hasMadeFirstPurchase;
             if (taskId === 'TELEGRAM_VISIT') isCompleted = true;
@@ -116,7 +115,7 @@ const claimTaskReward = asyncHandler(async (req, res) => {
         if (inviteIndex > 0) {
             const previousTaskId = INVITE_ORDER[inviteIndex - 1];
             const prevTaskData = user.claimedTasks.get(previousTaskId);
-            if (!prevTaskData) {
+            if (!prevTaskData || !prevTaskData.claimed) {
                 res.status(400); throw new Error('Debes reclamar la recompensa de la tarea anterior primero.');
             }
             lastClaimedReferralCount = prevTaskData.referralCountAtClaim;
@@ -138,23 +137,24 @@ const claimTaskReward = asyncHandler(async (req, res) => {
         type: 'task_reward', amount: reward, currency: 'USDT', description: `Recompensa de tarea: ${taskConfig.title}`
     };
 
-    // --- LÓGICA DE GUARDADO DE SNAPSHOT ---
-    const updateQuery = {
-        $inc: { 'balance.usdt': reward },
-        $set: { 
-            [`claimedTasks.${taskId}`]: {
-                claimed: true,
-                referralCountAtClaim: taskId.startsWith('INVITE_') ? level1ReferralCount : undefined
-            }
-        },
-        $push: { transactions: transaction }
+    // --- INICIO DE CORRECCIÓN CRÍTICA ---
+    // Nos aseguramos de guardar siempre un OBJETO en el Map, nunca un booleano.
+    const taskDataToSave = {
+        claimed: true,
+        // Solo guardamos el conteo de referidos si es una tarea de invitación.
+        referralCountAtClaim: taskId.startsWith('INVITE_') ? level1ReferralCount : undefined
     };
-    
-    if (taskId === 'TELEGRAM_VISIT' && !user.telegramVisited) {
-        updateQuery.$set.telegramVisited = true;
-    }
 
-    const updatedUser = await User.findByIdAndUpdate(userId, updateQuery, { new: true });
+    user.balance.usdt += reward;
+    user.transactions.push(transaction);
+    user.claimedTasks.set(taskId, taskDataToSave); // Usamos .set() para actualizar el Map
+
+    if (taskId === 'TELEGRAM_VISIT' && !user.telegramVisited) {
+        user.telegramVisited = true;
+    }
+    // --- FIN DE CORRECCIÓN CRÍTICA ---
+
+    const updatedUser = await user.save();
 
     res.json({ 
         message: `¡Recompensa de +${reward.toFixed(2)} USDT reclamada!`,
