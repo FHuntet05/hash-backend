@@ -1,4 +1,4 @@
-// RUTA: backend/models/userModel.js (v4.2 - CAMPO STATUS Y BANEO INTEGRADO)
+// RUTA: backend/models/userModel.js (v4.3 - BLINDADO CONTRA ERROR DE CREACIÓN)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -16,17 +16,15 @@ const userSchema = new mongoose.Schema({
     fullName: { type: String },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     
-    // --- INICIO DE CORRECCIÓN: AÑADIR CAMPOS STATUS Y ISBANNED ---
     status: {
         type: String,
         enum: ['active', 'banned', 'pending_verification'],
-        default: 'active' // Todos los usuarios nuevos son 'active' por defecto.
+        default: 'active'
     },
-    isBanned: { // Campo redundante pero mantenido por compatibilidad con su adminController
+    isBanned: {
         type: Boolean,
         default: false
     },
-    // --- FIN DE CORRECCIÓN ---
 
     password: { type: String, select: false },
     passwordResetRequired: { type: Boolean, default: false },
@@ -57,7 +55,8 @@ const userSchema = new mongoose.Schema({
             claimed: { type: Boolean, default: true },
             referralCountAtClaim: { type: Number } 
         }, { _id: false }),
-        default: {}
+        default: {},
+        required: true // <-- CAMBIO CRÍTICO: Fuerza a Mongoose a aplicar el default.
     },
 
     telegramVisited: {
@@ -81,7 +80,6 @@ const userSchema = new mongoose.Schema({
     
 }, { timestamps: true });
 
-// --- MIDDLEWARE Y MÉTODOS (sin cambios) ---
 userSchema.pre('save', async function(next) {
     if (this.isModified('password') && this.password) {
         const salt = await bcrypt.genSalt(10);
@@ -91,7 +89,6 @@ userSchema.pre('save', async function(next) {
         const salt = await bcrypt.genSalt(10);
         this.withdrawalPassword = await bcrypt.hash(this.withdrawalPassword, salt);
     }
-    // Sincroniza isBanned con status para consistencia
     if (this.isModified('status')) {
         this.isBanned = this.status === 'banned';
     }
