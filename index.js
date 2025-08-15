@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v1.4 - LÓGICA DE REFERIDOS CORREGIDA)
+// RUTA: backend/index.js (v1.5 - LÓGICA DE ONBOARDING ROBUSTA)
 
 // --- IMPORTS Y CONFIGURACIÓN INICIAL (SIN CAMBIOS) ---
 const express = require('express');
@@ -90,82 +90,80 @@ const WELCOME_MESSAGE = `
 🚀 ¿Listo para poner la primera piedra de tu imperio?
 🔘 Pulsa el botón inferior para abrir la aplicación y empezar a construir.`;
 
+
+// --- INICIO DE REFACTORIZACIÓN CRÍTICA DEL COMANDO /START ---
+const handleNewUserCreation = async (ctx) => {
+    const referredId = ctx.from.id.toString();
+    console.log(`[Bot /start] Usuario ${referredId} no encontrado. Creando nuevo perfil.`);
+    const username = ctx.from.username || `user_${referredId}`;
+    const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
+
+    const initialFactories = [];
+    const freeFactory = await Factory.findOne({ isFree: true }).lean();
+    if (freeFactory) {
+        const purchaseDate = new Date();
+        const expiryDate = new Date(purchaseDate);
+        expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
+        initialFactories.push({
+            factory: freeFactory._id,
+            purchaseDate,
+            expiryDate,
+            lastClaim: purchaseDate
+        });
+    } else {
+        console.warn('[Bot /start] ADVERTENCIA: No se encontró fábrica "isFree".'.yellow);
+    }
+
+    const newUser = new User({ 
+        telegramId: referredId, 
+        username, 
+        fullName: fullName || username, 
+        language: ctx.from.language_code || 'es',
+        purchasedFactories: initialFactories
+    });
+    
+    // Guardamos al nuevo usuario INMEDIATAMENTE para obtener un _id válido.
+    await newUser.save();
+    console.log(`[Bot /start] Nuevo usuario ${referredId} guardado con _id: ${newUser._id}`);
+    return newUser;
+};
+
+
 bot.command('start', async (ctx) => {
     try {
         const referredId = ctx.from.id.toString();
         let referrerId = null;
-        if (ctx.startPayload) {
-            referrerId = ctx.startPayload.trim();
-        } else {
-            const parts = ctx.message.text.split(' ');
-            if (parts.length > 1 && parts[1]) {
-                referrerId = parts[1].trim();
-            }
+        const startPayload = ctx.startPayload || (ctx.message.text.split(' ')[1] || null);
+        if (startPayload) {
+            referrerId = startPayload.trim();
         }
         
         console.log(`[Bot /start] Petición de inicio. Usuario: ${referredId}. Referente: ${referrerId}`.cyan);
 
+        // Paso 1: Buscar o crear el usuario que inició el bot.
         let user = await User.findOne({ telegramId: referredId });
-        let isNewUser = false;
-
         if (!user) {
-            isNewUser = true;
-            console.log(`[Bot /start] Usuario no encontrado. Creando nuevo perfil para ${referredId}.`);
-            const username = ctx.from.username || `user_${referredId}`;
-            const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
-            
-            const initialFactories = [];
-            const freeFactory = await Factory.findOne({ isFree: true }).lean();
-            if (freeFactory) {
-                const purchaseDate = new Date();
-                const expiryDate = new Date(purchaseDate);
-                expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
-                initialFactories.push({
-                    factory: freeFactory._id,
-                    purchaseDate: purchaseDate,
-                    expiryDate: expiryDate,
-                    lastClaim: purchaseDate
-                });
-            } else {
-                console.warn('[Bot /start] ADVERTENCIA: No se encontró fábrica "isFree".'.yellow);
-            }
-            
-            user = new User({ 
-                telegramId: referredId, 
-                username, 
-                fullName: fullName || username, 
-                language: ctx.from.language_code || 'es',
-                purchasedFactories: initialFactories
-            });
-            // --- INICIO DE CORRECCIÓN CRÍTICA DE LÓGICA ---
-            // 1. Guardamos al nuevo usuario INMEDIATAMENTE para obtener un _id válido.
-            await user.save();
-            console.log(`[Bot /start] Nuevo usuario ${referredId} guardado en la BD.`);
-            // --- FIN DE CORRECCIÓN CRÍTICA DE LÓGICA ---
+            user = await handleNewUserCreation(ctx);
         }
         
-        // La lógica de referidos ahora se ejecuta después de asegurar que el usuario existe en la BD.
+        // Paso 2: Manejar la lógica de referidos solo si es aplicable.
         const canBeReferred = referrerId && referrerId !== referredId && !user.referredBy;
         if (canBeReferred) {
             const referrerUser = await User.findOne({ telegramId: referrerId });
             if (referrerUser) {
                 user.referredBy = referrerUser._id;
-                // Verificamos que no se añada dos veces (aunque la lógica de canBeReferred ya lo previene)
-                if (!referrerUser.referrals.some(ref => ref.user.equals(user._id))) {
+                
+                const isAlreadyInReferrals = referrerUser.referrals.some(ref => ref.user.equals(user._id));
+                if (!isAlreadyInReferrals) {
                     referrerUser.referrals.push({ level: 1, user: user._id });
                     await referrerUser.save();
+                    await user.save(); // Guardamos el campo 'referredBy' en el usuario referido.
                     console.log(`[Bot /start] Usuario ${referredId} enlazado al referente ${referrerId}.`);
                 }
             }
         }
-
-        // Si el usuario no era nuevo, guardamos cualquier posible cambio (como el referredBy)
-        if (!isNewUser) {
-            await user.save();
-        }
         
-        console.log(`[Bot /start] Perfil del usuario ${referredId} finalizado.`);
-        
+        // Paso 3: Enviar el mensaje de bienvenida.
         const imageUrl = 'https://i.postimg.cc/8PqYj4zR/nicebot.jpg';
         const webAppUrl = process.env.FRONTEND_URL;
         
@@ -178,20 +176,21 @@ bot.command('start', async (ctx) => {
                 ]
             }
         });
+        console.log(`[Bot /start] Mensaje de bienvenida enviado a ${referredId}.`);
 
     } catch (error) {
         console.error('[Bot /start] ERROR FATAL EN EL COMANDO START:'.red.bold, error);
         await ctx.reply('Lo sentimos, ha ocurrido un error al procesar tu solicitud.');
     }
 });
+// --- FIN DE REFACTORIZACIÓN CRÍTICA ---
 
-// --- CONFIGURACIÓN DE COMANDOS Y WEBHOOK (SIN CAMBIOS) ---
+
 bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
 const secretPath = `/api/telegram-webhook/${secretToken}`;
 app.post(secretPath, (req, res) => bot.handleUpdate(req.body, res));
 
-// --- MIDDLEWARES DE ERROR Y ARRANQUE DEL SERVIDOR (SIN CAMBIOS) ---
 app.use(notFound);
 app.use(errorHandler);
 

@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/walletController.js (v2.0 - LÓGICA DE CONTROL DE RETIRO)
+// RUTA: backend/controllers/walletController.js (v3.0 - JERARQUÍA DE REGLAS DE RETIRO)
 
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
@@ -9,8 +9,6 @@ const { ethers } = require('ethers');
 const { getOrCreateUserBscWallet } = require('./paymentController');
 
 const FACTORY_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
-
-// --- Funciones createDepositAddress, purchaseFactoryWithBalance, claimFactoryProduction (SIN CAMBIOS) ---
 
 const createDepositAddress = async (req, res) => {
     const userId = req.user.id;
@@ -45,7 +43,8 @@ const purchaseFactoryWithBalance = async (req, res) => {
         }
 
         user.balance.usdt -= totalCost;
-        // Si el usuario tenía la restricción de comprar, se la quitamos
+        
+        // --- LÓGICA CLAVE: Reiniciar el flag individual al comprar ---
         if(user.mustPurchaseToWithdraw) {
             user.mustPurchaseToWithdraw = false;
         }
@@ -115,24 +114,30 @@ const requestWithdrawal = async (req, res) => {
   try {
     session.startTransaction();
 
-    // --- INICIO DE NUEVA LÓGICA DE VALIDACIÓN ---
     const settings = await Setting.findOne({ singleton: 'global_settings' }).session(session);
     if (!settings) throw new Error('La configuración del sistema no está disponible.');
+    
+    const user = await User.findById(userId).select('+withdrawalPassword').session(session);
+    if (!user) throw new Error('Usuario no encontrado.');
 
-    // 1. Verificar si los retiros están habilitados globalmente
+    // --- INICIO DE LA NUEVA JERARQUÍA DE VALIDACIONES ---
+    // 1. Prioridad Máxima: ¿Están los retiros habilitados globalmente?
     if (!settings.withdrawalsEnabled) {
       return res.status(403).json({ message: 'Los retiros están deshabilitados temporalmente por mantenimiento.' });
     }
 
-    const user = await User.findById(userId).select('+withdrawalPassword').session(session);
-    if (!user) throw new Error('Usuario no encontrado.');
+    // 2. Segunda Prioridad: ¿Hay una regla GLOBAL para forzar la compra?
+    if (settings.forcePurchaseOnAllWithdrawals) {
+      return res.status(403).json({ message: 'Debes comprar una fábrica para poder retirar.' });
+    }
 
-    // 2. Verificar si el usuario está obligado a comprar
+    // 3. Tercera Prioridad: ¿Hay una regla INDIVIDUAL para forzar la compra?
     if (user.mustPurchaseToWithdraw) {
       return res.status(403).json({ message: 'Debes comprar otra fábrica para poder retirar.' });
     }
-    // --- FIN DE NUEVA LÓGICA DE VALIDACIÓN ---
+    // --- FIN DE LA NUEVA JERARQUÍA DE VALIDACIONES ---
 
+    // El resto de la lógica continúa si todas las validaciones anteriores pasan...
     if (!user.isWithdrawalPasswordSet) return res.status(403).json({ message: 'Debes configurar una contraseña de retiro primero.' });
     if (!withdrawalPassword) return res.status(400).json({ message: 'La contraseña de retiro es obligatoria.' });
     const isMatch = await user.matchWithdrawalPassword(withdrawalPassword);

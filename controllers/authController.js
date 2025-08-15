@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/authController.js (v6.0 - LÓGICA DE BANEO Y MANTENIMIENTO)
+// RUTA: backend/controllers/authController.js (v6.1 - LÓGICA DE BANEO REFORZADA)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
@@ -24,28 +24,21 @@ const syncUser = async (req, res) => {
     const telegramId = telegramUser.id.toString();
 
     try {
-        // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA #1: MODO MANTENIMIENTO ---
-        // Se verifica el modo mantenimiento ANTES de cualquier operación de usuario.
         const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
         if (settings.maintenanceMode) {
-            // Se devuelve un error 503 Service Unavailable y los datos de mantenimiento.
-            // El frontend usará esto para mostrar la pantalla de mantenimiento.
             return res.status(503).json({ 
                 inMaintenance: true, 
                 maintenanceMessage: settings.maintenanceMessage 
             });
         }
-        // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA #1 ---
 
         let user = await User.findOne({ telegramId });
 
-        // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA #2: VALIDACIÓN DE BANEO ---
-        // Si el usuario existe, verificamos su estado ANTES de proceder.
+        // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA: VALIDACIÓN DE BANEO EN EL ACCESO ---
         if (user && user.status === 'banned') {
-            // Se devuelve un error 403 Forbidden para denegar el acceso.
             return res.status(403).json({ message: 'Tu cuenta ha sido suspendida. Contacta a soporte.' });
         }
-        // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA #2 ---
+        // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA ---
 
         let photoFileId = null;
         try {

@@ -1,4 +1,4 @@
-// RUTA: backend/middleware/authMiddleware.js (v18.0 - CON VALIDACIÓN DE BANEO)
+// RUTA: backend/middleware/authMiddleware.js (v18.1 - BANEO REFORZADO)
 
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
@@ -10,37 +10,40 @@ const protect = asyncHandler(async (req, res, next) => {
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     try {
       token = req.headers.authorization.split(' ')[1];
+
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      // Obtenemos el usuario completo, incluyendo el estado
       req.user = await User.findById(decoded.id).select('-password'); 
 
       if (!req.user) {
           res.status(401);
-          throw new Error('Usuario del token ya no existe.');
+          throw new Error('No autorizado, el usuario del token ya no existe.');
       }
 
-      // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA ---
-      // Verificamos si el usuario está baneado.
+      // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA: BARRERA FINAL DE BANEO ---
+      // Esta es la barrera final para CADA petición a la API. Si un usuario es baneado
+      // mientras tiene una sesión activa, será expulsado en su siguiente acción.
       if (req.user.status === 'banned') {
-          res.status(403); // 403 Forbidden es más apropiado que 401 Unauthorized
-          throw new Error('Acceso denegado. Tu cuenta ha sido suspendida.');
+          res.status(403); // 403 Forbidden: Autenticado pero no tiene permiso.
+          throw new Error('Acceso denegado: tu cuenta ha sido suspendida.');
       }
       // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA ---
       
       next();
 
     } catch (error) {
-      // Usamos el mensaje del error si es el de baneo, si no, uno genérico.
-      const errorMessage = error.message.includes('suspendida') ? error.message : 'No autorizado, token fallido.';
-      const statusCode = res.statusCode === 200 ? 401 : res.statusCode;
-      res.status(statusCode).json({ message: errorMessage });
+      // Devolvemos el status code que hayamos seteado (401 o 403)
+      const statusCode = res.statusCode !== 200 ? res.statusCode : 401;
+      // Y un mensaje claro.
+      const message = error.message || 'No autorizado, token fallido.';
+      res.status(statusCode).json({ message });
+      return; // Detenemos la ejecución
     }
   }
 
   if (!token) {
     res.status(401);
-    throw new Error('No autorizado, no hay token.');
+    throw new Error('No autorizado, no se encontró token.');
   }
 });
 
