@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/taskController.js (v26.0 - TAREAS SECUENCIALES)
+// RUTA: backend/controllers/taskController.js (v27.0 - TAREAS REINICIABLES)
 const asyncHandler = require('express-async-handler');
 const User = require('../models/userModel.js');
 const Factory = require('../models/factoryModel.js'); 
@@ -12,9 +12,7 @@ const TASKS_CONFIG = {
     TELEGRAM_VISIT: { title: "Unirse a la Comunidad", description: "Visita nuestro grupo oficial de Telegram.", reward: 0.2, actionUrl: "https://t.me/MegaFabricaOficial" }
 };
 
-// --- INICIO DE NUEVA LÓGICA: ORDEN DE TAREAS ---
 const INVITE_ORDER = ['INVITE_3', 'INVITE_5', 'INVITE_10', 'INVITE_20'];
-// ---------------------------------------------
 
 const getTaskStatus = asyncHandler(async (req, res) => {
     const user = await User.findById(req.user.id)
@@ -22,57 +20,60 @@ const getTaskStatus = asyncHandler(async (req, res) => {
         .populate('purchasedFactories.factory');
 
     if (!user) {
-        res.status(404);
-        throw new Error('Usuario no encontrado');
+        res.status(404); throw new Error('Usuario no encontrado');
     }
 
     const hasMadeFirstPurchase = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
     const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
 
-    const allTaskIds = Object.keys(TASKS_CONFIG);
     const responseTasks = [];
+    let lastClaimedReferralCount = 0; // El contador empieza en cero
 
-    for (const taskId of allTaskIds) {
+    for (const taskId of Object.keys(TASKS_CONFIG)) {
         const task = TASKS_CONFIG[taskId];
-        let isCompleted = false;
-        let progress = 0;
         let status = 'PENDING';
+        let progress = 0;
 
-        const isClaimed = user.claimedTasks.get(taskId) || false;
+        const isClaimed = user.claimedTasks.has(taskId);
 
-        // --- INICIO DE LÓGICA SECUENCIAL ---
-        const inviteIndex = INVITE_ORDER.indexOf(taskId);
-        if (inviteIndex > 0) {
-            const previousTaskId = INVITE_ORDER[inviteIndex - 1];
-            const isPreviousClaimed = user.claimedTasks.get(previousTaskId) || false;
-            if (!isPreviousClaimed) {
-                status = 'LOCKED'; // Nuevo estado para el frontend
+        if (taskId.startsWith('INVITE_')) {
+            const inviteIndex = INVITE_ORDER.indexOf(taskId);
+            let previousTaskClaimed = true;
+            if (inviteIndex > 0) {
+                const previousTaskId = INVITE_ORDER[inviteIndex - 1];
+                const prevTaskData = user.claimedTasks.get(previousTaskId);
+                if (prevTaskData) {
+                    lastClaimedReferralCount = prevTaskData.referralCountAtClaim;
+                } else {
+                    previousTaskClaimed = false;
+                }
             }
-        }
-        // --- FIN DE LÓGICA SECUENCIAL ---
+            
+            if (!previousTaskClaimed) {
+                status = 'LOCKED';
+            } else {
+                // --- LÓGICA DE PROGRESO REINICIADO ---
+                progress = Math.max(0, level1ReferralCount - lastClaimedReferralCount);
+                const isCompleted = progress >= task.target;
 
-        if (status !== 'LOCKED') {
-            switch (taskId) {
-                case 'FIRST_PURCHASE':
-                    isCompleted = hasMadeFirstPurchase;
-                    break;
-                case 'TELEGRAM_VISIT':
-                    isCompleted = true; 
-                    break;
-                default:
-                    if (taskId.startsWith('INVITE_')) {
-                        isCompleted = level1ReferralCount >= task.target;
-                        progress = level1ReferralCount;
-                    }
+                if (isClaimed) {
+                    status = 'CLAIMED';
+                } else if (isCompleted) {
+                    status = 'COMPLETED_NOT_CLAIMED';
+                }
             }
-    
+        } else { // Para tareas no relacionadas con invitaciones
+            let isCompleted = false;
+            if (taskId === 'FIRST_PURCHASE') isCompleted = hasMadeFirstPurchase;
+            if (taskId === 'TELEGRAM_VISIT') isCompleted = true;
+
             if (isClaimed) {
                 status = 'CLAIMED';
             } else if (isCompleted) {
                 status = 'COMPLETED_NOT_CLAIMED';
             }
         }
-
+        
         responseTasks.push({
             taskId,
             title: task.title,
@@ -84,18 +85,9 @@ const getTaskStatus = asyncHandler(async (req, res) => {
             actionUrl: task.actionUrl || null
         });
     }
-    
-    // Reordenar para que las tareas de invitación siempre aparezcan en orden
-    responseTasks.sort((a, b) => {
-        const aIndex = INVITE_ORDER.indexOf(a.taskId);
-        const bIndex = INVITE_ORDER.indexOf(b.taskId);
-        if (aIndex > -1 && bIndex > -1) return aIndex - bIndex;
-        return 0; // Mantener el orden relativo para otras tareas
-    });
 
     res.json(responseTasks);
 });
-
 
 const claimTaskReward = asyncHandler(async (req, res) => {
     const { taskId } = req.body;
@@ -111,33 +103,30 @@ const claimTaskReward = asyncHandler(async (req, res) => {
         res.status(404); throw new Error('Usuario no encontrado');
     }
 
-    if (user.claimedTasks.get(taskId)) {
+    if (user.claimedTasks.has(taskId)) {
         res.status(400); throw new Error('Ya has reclamado esta recompensa.');
     }
 
-    // Revalidación de lógica secuencial en el backend
-    const inviteIndex = INVITE_ORDER.indexOf(taskId);
-    if (inviteIndex > 0) {
-        const previousTaskId = INVITE_ORDER[inviteIndex - 1];
-        if (!user.claimedTasks.get(previousTaskId)) {
-            res.status(400);
-            throw new Error('Debes reclamar la recompensa de la tarea anterior primero.');
-        }
-    }
-
+    const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
     let isCompleted = false;
-    switch (taskId) {
-        case 'FIRST_PURCHASE':
-            isCompleted = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
-            break;
-        case 'TELEGRAM_VISIT':
-            isCompleted = true;
-            break;
-        default:
-            if (taskId.startsWith('INVITE_')) {
-                const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
-                isCompleted = level1ReferralCount >= taskConfig.target;
+    let lastClaimedReferralCount = 0;
+
+    if (taskId.startsWith('INVITE_')) {
+        const inviteIndex = INVITE_ORDER.indexOf(taskId);
+        if (inviteIndex > 0) {
+            const previousTaskId = INVITE_ORDER[inviteIndex - 1];
+            const prevTaskData = user.claimedTasks.get(previousTaskId);
+            if (!prevTaskData) {
+                res.status(400); throw new Error('Debes reclamar la recompensa de la tarea anterior primero.');
             }
+            lastClaimedReferralCount = prevTaskData.referralCountAtClaim;
+        }
+        const progress = level1ReferralCount - lastClaimedReferralCount;
+        isCompleted = progress >= taskConfig.target;
+    } else if (taskId === 'FIRST_PURCHASE') {
+        isCompleted = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
+    } else if (taskId === 'TELEGRAM_VISIT') {
+        isCompleted = true;
     }
     
     if (!isCompleted) {
@@ -149,9 +138,15 @@ const claimTaskReward = asyncHandler(async (req, res) => {
         type: 'task_reward', amount: reward, currency: 'USDT', description: `Recompensa de tarea: ${taskConfig.title}`
     };
 
+    // --- LÓGICA DE GUARDADO DE SNAPSHOT ---
     const updateQuery = {
         $inc: { 'balance.usdt': reward },
-        $set: { [`claimedTasks.${taskId}`]: true },
+        $set: { 
+            [`claimedTasks.${taskId}`]: {
+                claimed: true,
+                referralCountAtClaim: taskId.startsWith('INVITE_') ? level1ReferralCount : undefined
+            }
+        },
         $push: { transactions: transaction }
     };
     

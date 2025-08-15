@@ -1,4 +1,4 @@
-// RUTA: backend/models/userModel.js (v4.0 - SOPORTE PARA FORZAR COMPRA)
+// RUTA: backend/models/userModel.js (v4.1 - SOPORTE PARA TAREAS REINICIABLES)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -38,11 +38,18 @@ const userSchema = new mongoose.Schema({
         level: { type: Number, required: true, enum: [1, 2, 3] }
     }],
     
+    // --- INICIO DE MODIFICACIÓN PARA TAREAS ---
     claimedTasks: {
         type: Map,
-        of: Boolean,
+        of: new mongoose.Schema({
+            claimed: { type: Boolean, default: true },
+            // Guardamos el conteo de referidos al momento de reclamar
+            referralCountAtClaim: { type: Number } 
+        }, { _id: false }),
         default: {}
     },
+    // --- FIN DE MODIFICACIÓN ---
+
     telegramVisited: {
         type: Boolean,
         default: false
@@ -57,16 +64,10 @@ const userSchema = new mongoose.Schema({
         default: false,
     },
 
-    // --- INICIO DE NUEVO CAMPO ---
-    /**
-     * Si es 'true', el usuario no podrá retirar hasta que compre una nueva fábrica.
-     * Un administrador puede activar este flag manualmente.
-     */
     mustPurchaseToWithdraw: {
       type: Boolean,
       default: false
     },
-    // --- FIN DE NUEVO CAMPO ---
     
 }, { timestamps: true });
 
