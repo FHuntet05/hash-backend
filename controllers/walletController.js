@@ -1,201 +1,244 @@
-// RUTA: backend/controllers/walletController.js (v5.0 - GENERACIÓN HD SEGURA Y CORRECCIÓN BUG-011)
+// RUTA: backend/controllers/walletController.js (v3.2 - UNIFICADO, ESTABLE Y CORREGIDO)
 
-const asyncHandler = require('express-async-handler');
+const mongoose = require('mongoose');
 const User = require('../models/userModel');
 const Factory = require('../models/factoryModel');
-const Transaction = require('../models/transactionModel');
-const Settings = require('../models/settingsModel');
-const mongoose = require('mongoose');
+const Setting = require('../models/settingsModel');
+const { ethers } = require('ethers');
 const { processMultiLevelCommissions } = require('../services/referralService');
-const { ethers } = require('ethers'); // <-- 1. IMPORTAMOS ETHERS
+const { getOrCreateUserBscWallet } = require('./paymentController');
 
-// ... (purchaseFactory, claimProduction, requestWithdrawal no tienen cambios) ...
+const FACTORY_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
 
-/**
- * @desc    El usuario compra una fábrica.
- * @route   POST /api/wallet/purchase-factory
- * @access  Private
- */
-const purchaseFactory = asyncHandler(async (req, res) => {
-    const { factoryId } = req.body;
+const createDepositAddress = async (req, res) => {
     const userId = req.user.id;
-    
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
-        const factory = await Factory.findById(factoryId).session(session);
+        const userUniqueWalletAddress = await getOrCreateUserBscWallet(userId);
+        res.status(200).json({
+            paymentAddress: userUniqueWalletAddress,
+            currency: 'USDT',
+            network: 'BEP20 (BSC)'
+        });
+    } catch (error) {
+        console.error('Error en createDepositAddress:', error);
+        res.status(500).json({ message: 'Error al generar la dirección de depósito.' });
+    }
+};
+
+const purchaseFactoryWithBalance = async (req, res) => {
+    const { factoryId, quantity = 1 } = req.body;
+    const userId = req.user.id;
+    const session = await mongoose.startSession();
+    try {
+        session.startTransaction();
+        const factory = await Factory.findById(factoryId).session(session).lean();
         if (!factory) {
-            throw new Error('Fábrica no encontrada.');
+            throw new Error('La fábrica seleccionada no existe.');
         }
 
-        const user = await User.findById(userId)
-            .populate('purchasedFactories.factory')
-            .session(session);
-
+        const user = await User.findById(userId).session(session);
         if (!user) {
             throw new Error('Usuario no encontrado.');
         }
-        
-        if (user.balance.usdt < factory.price) {
-            res.status(400);
-            throw new Error('Saldo insuficiente para comprar esta fábrica.');
+
+        const totalCost = factory.price * quantity;
+        if (user.balance.usdt < totalCost) {
+            return res.status(400).json({ message: 'Saldo USDT insuficiente.' });
         }
-
+        
         const shouldTriggerCommission = !factory.isFree && !user.hasTriggeredReferralCommission;
-
         if (shouldTriggerCommission) {
             await processMultiLevelCommissions(user, session);
             user.hasTriggeredReferralCommission = true;
         }
 
-        const purchaseDate = new Date();
-        const expiryDate = new Date(purchaseDate);
-        expiryDate.setDate(expiryDate.getDate() + factory.durationDays);
+        user.balance.usdt -= totalCost;
+        
+        if (user.mustPurchaseToWithdraw) {
+            user.mustPurchaseToWithdraw = false;
+        }
 
-        user.balance.usdt -= factory.price;
-        user.purchasedFactories.push({
-            factory: factory._id,
-            purchaseDate,
-            expiryDate,
-            lastClaim: purchaseDate
-        });
+        const now = new Date();
+        for (let i = 0; i < quantity; i++) {
+            user.purchasedFactories.push({ 
+                factory: factory._id, 
+                purchaseDate: now, 
+                expiryDate: new Date(now.getTime() + factory.durationDays * 24 * 60 * 60 * 1000),
+                lastClaim: now
+            });
+        }
+        
         user.transactions.push({
             type: 'purchase',
-            amount: factory.price,
+            amount: totalCost,
             currency: 'USDT',
-            description: `Compra de fábrica: ${factory.name}`,
-            status: 'completed'
+            description: `Compra de ${quantity}x ${factory.name}`,
+            status: 'completed',
+            metadata: { factoryId }
         });
-        
-        const updatedUser = await user.save({ session });
 
+        await user.save({ session });
         await session.commitTransaction();
 
-        res.status(201).json({
-            message: '¡Fábrica comprada con éxito!',
-            user: updatedUser
-        });
-
+        const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
+        res.status(200).json({ message: `¡Compra de ${quantity}x ${factory.name} exitosa!`, user: updatedUser.toObject() });
     } catch (error) {
         await session.abortTransaction();
-        console.error('[Purchase Factory Error]', error);
-        const statusCode = res.statusCode !== 200 ? res.statusCode : 500;
-        res.status(statusCode).json({ message: error.message });
+        console.error('Error en purchaseFactoryWithBalance:', error);
+        res.status(500).json({ message: error.message || 'Error al procesar la compra.' });
     } finally {
         session.endSession();
     }
-});
+};
 
-
-const claimProduction = asyncHandler(async (req, res) => {
-    // ... Sin cambios ...
+const claimFactoryProduction = async (req, res) => {
     const { purchasedFactoryId } = req.body;
     const userId = req.user.id;
-    const user = await User.findById(userId).populate('purchasedFactories.factory');
-    if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); }
-    const purchasedFactory = user.purchasedFactories.id(purchasedFactoryId);
-    if (!purchasedFactory) { res.status(404); throw new Error('Fábrica comprada no encontrada en tu perfil.'); }
-    const now = new Date();
-    const lastClaim = new Date(purchasedFactory.lastClaim);
-    const hoursSinceLastClaim = (now - lastClaim) / (1000 * 60 * 60);
-    if (hoursSinceLastClaim < 24) { res.status(400); throw new Error('Aún no puedes reclamar la producción de esta fábrica.'); }
-    const dailyProduction = purchasedFactory.factory.dailyProduction;
-    user.balance.usdt += dailyProduction;
-    purchasedFactory.lastClaim = now;
-    await user.save();
-    res.json({ message: `+${dailyProduction.toFixed(2)} USDT reclamados.`, user });
-});
+    const session = await mongoose.startSession();
+    try {
+        session.startTransaction();
+        const user = await User.findById(userId).populate('purchasedFactories.factory').session(session);
+        if (!user) {
+            throw new Error('Usuario no encontrado.');
+        }
 
+        const factoryInstance = user.purchasedFactories.id(purchasedFactoryId);
+        if (!factoryInstance) {
+            throw new Error('Fábrica no encontrada.');
+        }
 
-const requestWithdrawal = asyncHandler(async (req, res) => {
-    // ... Sin cambios ...
-    const { amount, withdrawalAddress, withdrawalPassword } = req.body;
-    const userId = req.user.id;
-    const settings = await Settings.getSettings();
-    const user = await User.findById(userId).select('+withdrawalPassword +isWithdrawalPasswordSet').populate('purchasedFactories.factory');
-    if (!settings.withdrawalsEnabled) { res.status(403); throw new Error('Los retiros están deshabilitados temporalmente por mantenimiento.'); }
-    if (!user.isWithdrawalPasswordSet) { res.status(400); throw new Error('Debe configurar su contraseña de retiro antes de poder solicitar uno.'); }
-    if (!withdrawalPassword) { res.status(400); throw new Error('Debe proporcionar su contraseña de retiro.'); }
-    const isPasswordMatch = await user.matchWithdrawalPassword(withdrawalPassword);
-    if (!isPasswordMatch) { res.status(401); throw new Error('La contraseña de retiro es incorrecta.'); }
-    const withdrawalAmount = parseFloat(amount);
-    if (isNaN(withdrawalAmount) || withdrawalAmount <= 0) { res.status(400); throw new Error('El monto del retiro no es válido.'); }
-    if (withdrawalAmount < settings.minWithdrawal) { res.status(400); throw new Error(`El monto mínimo para retirar es de ${settings.minWithdrawal} USDT.`); }
-    if (withdrawalAmount > user.balance.usdt) { res.status(400); throw new Error('Saldo insuficiente para realizar este retiro.'); }
-    const hasPurchasedNonFreeFactory = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
-    if (settings.forcePurchaseOnAllWithdrawals && !hasPurchasedNonFreeFactory) { res.status(403); throw new Error('Debe comprar al menos una fábrica para poder activar los retiros.'); }
-    if (user.mustPurchaseToWithdraw && !hasPurchasedNonFreeFactory) { res.status(403); throw new Error('Su cuenta requiere la compra de una fábrica para poder realizar retiros. Contacte a soporte si cree que es un error.'); }
-    const feeAmount = withdrawalAmount * (settings.withdrawalFeePercent / 100);
-    const amountToReceive = withdrawalAmount - feeAmount;
-    user.transactions.push({ type: 'withdrawal', amount: -withdrawalAmount, currency: 'USDT', status: 'pending', description: `Solicitud de retiro a: ${withdrawalAddress}`, metadata: { address: withdrawalAddress, fee: feeAmount, finalAmount: amountToReceive } });
-    user.balance.usdt -= withdrawalAmount;
-    await user.save();
-    res.status(201).json({ message: 'Su solicitud de retiro ha sido enviada y está pendiente de aprobación.', newBalance: user.balance.usdt });
-});
+        const now = new Date();
+        if (now.getTime() - new Date(factoryInstance.lastClaim).getTime() < FACTORY_CYCLE_DURATION_MS) {
+            return res.status(400).json({ message: 'El ciclo de producción de 24 horas aún no ha terminado.' });
+        }
 
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
-/**
- * @desc    Crea o recupera la dirección de depósito única de un usuario. IDEMPOTENTE y SEGURO.
- * @route   POST /api/wallet/create-deposit-address
- * @access  Private
- */
-const createDepositAddress = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('_id depositAddress');
-    if (!user) {
-        res.status(404);
-        throw new Error('Usuario no encontrado');
-    }
-
-    // 2. Verificación de Idempotencia: Si ya tiene una dirección, la devolvemos inmediatamente.
-    if (user.depositAddress) {
-        console.log(`[Depósito] Dirección recuperada para usuario ${user._id}: ${user.depositAddress}`);
-        return res.json({
-            paymentAddress: user.depositAddress,
+        const production = factoryInstance.factory.dailyProduction;
+        user.balance.usdt += production;
+        factoryInstance.lastClaim = now;
+        
+        user.transactions.push({
+            type: 'production_claim',
+            amount: production,
             currency: 'USDT',
-            network: 'BSC (BEP20)'
+            description: `Reclamo de producción de ${factoryInstance.factory.name}`,
+            status: 'completed',
+            metadata: { purchasedFactoryId }
         });
+        
+        await user.save({ session });
+        await session.commitTransaction();
+        
+        res.json({ message: `¡Has reclamado ${production.toFixed(2)} USDT!`, user: user.toObject() });
+    } catch (error) {
+        await session.abortTransaction();
+        console.error("Error al reclamar la producción:", error);
+        res.status(500).json({ message: error.message || "Error del servidor al procesar el reclamo." });
+    } finally {
+        session.endSession();
+    }
+};
+
+const requestWithdrawal = async (req, res) => {
+  const { amount, walletAddress, withdrawalPassword } = req.body;
+  const userId = req.user.id;
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+
+    const settings = await Setting.findOne({ singleton: 'global_settings' }).session(session);
+    if (!settings) {
+        throw new Error('La configuración del sistema no está disponible.');
+    }
+    
+    const user = await User.findById(userId).select('+withdrawalPassword +isWithdrawalPasswordSet').populate('purchasedFactories.factory').session(session);
+    if (!user) {
+        throw new Error('Usuario no encontrado.');
     }
 
-    // 3. Generación Segura (Solo se ejecuta una vez por usuario)
-    console.log(`[Depósito] Generando nueva dirección para usuario ${user._id}...`);
-    const masterNode = ethers.HDNodeWallet.fromPhrase(process.env.MASTER_SEED_PHRASE);
-    
-    // Convertimos el _id del usuario en un índice numérico único para la derivación.
-    // Tomamos los últimos 6 caracteres del ID hexadecimal y los convertimos a un número.
-    const userIndex = parseInt(user._id.toString().slice(-6), 16);
-    
-    const derivationPath = `m/44'/60'/0'/0/${userIndex}`;
-    const derivedWallet = masterNode.derivePath(derivationPath);
-    const newDepositAddress = derivedWallet.address;
+    if (!settings.withdrawalsEnabled) {
+      return res.status(403).json({ message: 'Los retiros están deshabilitados temporalmente por mantenimiento.' });
+    }
 
-    // 4. Persistencia: Guardamos la dirección en la base de datos para futuras consultas.
-    user.depositAddress = newDepositAddress;
-    await user.save();
-    
-    console.log(`[Depósito] ✅ Dirección generada y guardada para usuario ${user._id}: ${newDepositAddress}`);
+    const hasPurchasedNonFreeFactory = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
+    if (settings.forcePurchaseOnAllWithdrawals && !hasPurchasedNonFreeFactory) {
+      return res.status(403).json({ message: 'Debes comprar al menos una fábrica para poder activar los retiros.' });
+    }
 
-    // 5. Respuesta Correcta: Enviamos el objeto con la estructura que el frontend espera.
-    res.status(201).json({
-        paymentAddress: newDepositAddress,
+    if (user.mustPurchaseToWithdraw && !hasPurchasedNonFreeFactory) {
+      return res.status(403).json({ message: 'Debes comprar otra fábrica para poder retirar.' });
+    }
+
+    if (!user.isWithdrawalPasswordSet) {
+        return res.status(403).json({ message: 'Debes configurar una contraseña de retiro primero.' });
+    }
+    if (!withdrawalPassword) {
+        return res.status(400).json({ message: 'La contraseña de retiro es obligatoria.' });
+    }
+    const isMatch = await user.matchWithdrawalPassword(withdrawalPassword);
+    if (!isMatch) {
+        return res.status(401).json({ message: 'La contraseña de retiro es incorrecta.' });
+    }
+
+    const numericAmount = parseFloat(amount);
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+        return res.status(400).json({ message: 'El monto del retiro no es válido.' });
+    }
+    if (numericAmount < settings.minimumWithdrawal) {
+        return res.status(400).json({ message: `El retiro mínimo es ${settings.minimumWithdrawal} USDT.` });
+    }
+    if (!ethers.utils.isAddress(walletAddress)) {
+        return res.status(400).json({ message: 'La dirección de billetera no es válida.' });
+    }
+    if (user.balance.usdt < numericAmount) {
+        return res.status(400).json({ message: 'Saldo insuficiente.' });
+    }
+
+    user.balance.usdt -= numericAmount;
+    
+    const feeAmount = numericAmount * (settings.withdrawalFeePercent / 100);
+    const netAmount = numericAmount - feeAmount;
+
+    user.transactions.push({
+        type: 'withdrawal',
+        status: 'pending',
+        amount: -numericAmount,
         currency: 'USDT',
-        network: 'BSC (BEP20)'
+        description: `Solicitud de retiro a ${walletAddress}`,
+        metadata: { walletAddress, feeAmount, netAmount }
     });
-});
-// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
 
-const getHistory = asyncHandler(async (req, res) => {
-    // ... Sin cambios ...
+    await user.save({ session });
+    await session.commitTransaction();
+
+    const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
+    res.status(201).json({ message: 'Tu solicitud de retiro ha sido enviada con éxito.', user: updatedUser.toObject() });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error en requestWithdrawal:', error);
+    res.status(500).json({ message: error.message || 'Error interno al procesar la solicitud.' });
+  } finally {
+    session.endSession();
+  }
+};
+
+const getHistory = async (req, res) => {
+  try {
     const user = await User.findById(req.user.id).select('transactions');
-    if (!user) { res.status(404); throw new Error('Usuario no encontrado'); }
+    if (!user) {
+        return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
     const sortedTransactions = user.transactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     res.json(sortedTransactions);
-});
+  } catch (error) {
+    console.error('Error en getHistory:', error);
+    res.status(500).json({ message: 'Error al obtener el historial.' });
+  }
+};
 
 module.exports = {
-    purchaseFactory,
-    claimProduction,
-    requestWithdrawal,
-    createDepositAddress,
-    getHistory
+  createDepositAddress,
+  purchaseFactoryWithBalance,
+  claimFactoryProduction,
+  requestWithdrawal,
+  getHistory,
 };
