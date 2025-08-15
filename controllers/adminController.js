@@ -1,9 +1,9 @@
-// RUTA: backend/controllers/adminController.js (v45.1 - INTEGRADO CON NUEVO SETTINGSMODEL)
+// RUTA: backend/controllers/adminController.js (v45.2 - VERSIÓN FINAL ESTABLE)
 
 const User = require('../models/userModel');
 const Transaction = require('../models/transactionModel');
 const Factory = require('../models/factoryModel');
-const Setting = require('../models/settingsModel'); // Se usa el modelo unificado
+const Setting = require('../models/settingsModel');
 const CryptoWallet = require('../models/cryptoWalletModel');
 const mongoose = require('mongoose');
 const speakeasy = require('speakeasy');
@@ -17,75 +17,50 @@ const { ethers } = require('ethers');
 const PendingTx = require('../models/pendingTxModel');
 const qrCodeToDataURLPromise = require('util').promisify(QRCode.toDataURL);
 
-// --- LÓGICA EXISTENTE (SIN CAMBIOS) ---
+// --- CÓDIGO DE UTILIDADES Y FUNCIONES AUXILIARES (SE MANTIENEN SIN CAMBIOS) ---
 const PLACEHOLDER_AVATAR_URL = 'https://i.postimg.cc/mD21B6r7/user-avatar-placeholder.png';
 const USDT_BSC_ADDRESS = '0x55d398326f99059fF775485246999027B3197955';
 const USDT_ABI = ['function balanceOf(address) view returns (uint256)'];
 const GAS_SUFFICIENT_TOLERANCE = 0.000000001; 
-function promiseWithTimeout(promise, ms, timeoutMessage = 'Operación excedió el tiempo de espera.') { const timeout = new Promise((_, reject) => { const id = setTimeout(() => { clearTimeout(id); reject(new Error(timeoutMessage)); }, ms); }); return Promise.race([promise, timeout]); }
-async function _getBalancesForAddress(address, chain) { const TIMEOUT_MS = 15000; try { if (chain === 'BSC') { const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/'); const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider); const [usdtBalanceRaw, bnbBalanceRaw] = await Promise.all([ promiseWithTimeout(usdtBscContract.balanceOf(address), TIMEOUT_MS), promiseWithTimeout(bscProvider.getBalance(address), TIMEOUT_MS) ]); const bnbFormatted = ethers.utils.formatEther(bnbBalanceRaw); return { usdt: parseFloat(ethers.utils.formatUnits(usdtBalanceRaw, 18)), bnb: parseFloat(bnbFormatted) }; } else { throw new Error(`Cadena no soportada: ${chain}. Solo se procesa BSC.`); } } catch (error) { console.error(`Error al obtener saldo para ${address} en ${chain}:`, error); throw new Error(`Fallo al escanear ${address}. Causa: ${error.message}`); } }
+
+function promiseWithTimeout(promise, ms, timeoutMessage = 'Operación excedió el tiempo de espera.') {
+    const timeout = new Promise((_, reject) => {
+        const id = setTimeout(() => { clearTimeout(id); reject(new Error(timeoutMessage)); }, ms);
+    });
+    return Promise.race([promise, timeout]);
+}
+
+async function _getBalancesForAddress(address, chain) {
+    const TIMEOUT_MS = 15000;
+    try {
+        if (chain === 'BSC') {
+            const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
+            const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider);
+            const [usdtBalanceRaw, bnbBalanceRaw] = await Promise.all([
+                promiseWithTimeout(usdtBscContract.balanceOf(address), TIMEOUT_MS),
+                promiseWithTimeout(bscProvider.getBalance(address), TIMEOUT_MS)
+            ]);
+            const bnbFormatted = ethers.utils.formatEther(bnbBalanceRaw);
+            return { usdt: parseFloat(ethers.utils.formatUnits(usdtBalanceRaw, 18)), bnb: parseFloat(bnbFormatted) };
+        } else {
+            throw new Error(`Cadena no soportada: ${chain}. Solo se procesa BSC.`);
+        }
+    } catch (error) {
+        console.error(`Error al obtener saldo para ${address} en ${chain}:`, error);
+        throw new Error(`Fallo al escanear ${address}. Causa: ${error.message}`);
+    }
+}
+
+// --- CONTROLADORES COMPLETOS Y SINCRONIZADOS ---
+
 const getPendingBlockchainTxs = asyncHandler(async (req, res) => { const pendingTxs = await PendingTx.find().sort({ createdAt: -1 }).limit(50); res.json(pendingTxs); });
 const getPendingWithdrawals = asyncHandler(async (req, res) => { const page = parseInt(req.query.page) || 1; const limit = parseInt(req.query.limit) || 10; const filter = { type: 'withdrawal', status: 'pending' }; const total = await Transaction.countDocuments(filter); const withdrawals = await Transaction.find(filter).sort({ createdAt: 'desc' }).limit(limit).skip(limit * (page - 1)).lean(); if (withdrawals.length === 0) return res.json({ withdrawals: [], page: 1, pages: 0, total: 0 }); const userIds = [...new Set(withdrawals.map(w => w.user.toString()) )]; const users = await User.find({ '_id': { $in: userIds } }).select('username telegramId photoFileId').lean(); const userMap = users.reduce((acc, user) => { acc[user._id.toString()] = user; return acc; }, {}); const withdrawalsWithDetails = await Promise.all(withdrawals.map(async (w) => { const userInfo = userMap[w.user.toString()]; if (userInfo) { const photoUrl = await getTemporaryPhotoUrl(userInfo.photoFileId); return { ...w, user: { ...userInfo, photoUrl: photoUrl || PLACEHOLDER_AVATAR_URL } }; } return w; })); res.json({ withdrawals: withdrawalsWithDetails.filter(Boolean), page, pages: Math.ceil(total / limit), total }); });
 const processWithdrawal = asyncHandler(async (req, res) => { const { status, adminNotes } = req.body; const { id } = req.params; if (!['completed', 'rejected'].includes(status)) { res.status(400); throw new Error("El estado debe ser 'completed' o 'rejected'."); } const withdrawal = await Transaction.findById(id);  if (!withdrawal || withdrawal.type !== 'withdrawal' || withdrawal.status !== 'pending') { res.status(404); throw new Error('Retiro no encontrado o ya ha sido procesado.'); } const userId = withdrawal.user; const userToNotify = await User.findById(userId).select('telegramId'); if (!userToNotify || !userToNotify.telegramId) { console.warn(`No se pudo encontrar el telegramId para el usuario ${userId}. No se enviará notificación.`); } const session = await mongoose.startSession(); try { session.startTransaction(); withdrawal.metadata.set('adminNotes', adminNotes || 'N/A'); withdrawal.metadata.set('processedBy', req.user.username); let notificationMessage = ''; if (status === 'completed') { const recipientAddress = withdrawal.metadata.get('walletAddress'); const amount = withdrawal.amount; const currency = withdrawal.currency; if (!recipientAddress || !amount || !currency) throw new Error('Datos de retiro incompletos.'); const txHash = `simulated_tx_${Date.now()}`;  withdrawal.status = 'completed'; withdrawal.description = `Retiro completado. Hash: ${txHash.substring(0, 15)}...`; notificationMessage = `✅ <b>¡Retiro Aprobado!</b>\n\nTu solicitud de retiro por <b>${amount.toFixed(2)} ${currency}</b> ha sido procesada.\n\n<b>Dirección:</b> <code>${recipientAddress}</code>`; await User.findByIdAndUpdate(userId, { $inc: { totalWithdrawal: amount } }, { session }); } else { const userForRefund = await User.findById(withdrawal.user).session(session); if (!userForRefund) throw new Error('Usuario del retiro no encontrado para el reembolso.'); userForRefund.balance.usdt += withdrawal.amount; await userForRefund.save({ session }); withdrawal.status = 'rejected'; withdrawal.description = `Retiro rechazado por admin. Fondos devueltos al saldo.`; notificationMessage = `❌ <b>Retiro Rechazado</b>\n\nTu solicitud de retiro por <b>${withdrawal.amount.toFixed(2)} USDT</b> ha sido rechazada.\n\n<b>Motivo:</b> ${adminNotes || 'Contacta a soporte.'}\n\nLos fondos han sido devueltos a tu saldo.`; } const updatedWithdrawal = await withdrawal.save({ session }); await session.commitTransaction(); if (userToNotify && userToNotify.telegramId && notificationMessage) { await sendTelegramMessage(userToNotify.telegramId, notificationMessage); } res.json({ message: `Retiro marcado como '${status}' exitosamente.`, withdrawal: updatedWithdrawal }); } catch (error) { await session.abortTransaction(); console.error("Error en processWithdrawal:", error); res.status(500).json({ message: error.message || "Error del servidor al procesar el retiro." }); } finally { session.endSession(); } });
-const checkAndSendGasAlert = async (currentBnbBalance) => { try { const settings = await Setting.findOne({ _id: 'global_settings' }).lean(); if (!settings || !settings.adminTelegramId) return; const threshold = settings.bnbAlertThreshold; if (currentBnbBalance < threshold) { const message = `🚨 <b>Alerta de Nivel de Gas Bajo</b> 🚨\n\n` + `La billetera central de la red <b>BSC</b> tiene un balance de <b>${currentBnbBalance.toFixed(4)} BNB</b>, ` + `el cual está por debajo del umbral de alerta de <b>${threshold} BNB</b>.\n\n` + `Por favor, recargue fondos para asegurar la continuidad de las operaciones.`; await sendTelegramMessage(settings.adminTelegramId, message); } } catch (error) { console.error("Error al enviar la alerta de gas:", error); } };
+const checkAndSendGasAlert = async (currentBnbBalance) => { try { const settings = await Setting.getSettings(); if (!settings || !settings.adminTelegramId) return; const threshold = settings.bnbAlertThreshold; if (currentBnbBalance < threshold) { const message = `🚨 <b>Alerta de Nivel de Gas Bajo</b> 🚨\n\n` + `La billetera central de la red <b>BSC</b> tiene un balance de <b>${currentBnbBalance.toFixed(4)} BNB</b>, ` + `el cual está por debajo del umbral de alerta de <b>${threshold} BNB</b>.\n\n` + `Por favor, recargue fondos para asegurar la continuidad de las operaciones.`; await sendTelegramMessage(settings.adminTelegramId, message); } } catch (error) { console.error("Error al enviar la alerta de gas:", error); } };
 const getUserDetails = asyncHandler(async (req, res) => { const { id } = req.params; if (!mongoose.Types.ObjectId.isValid(id)) { res.status(400); throw new Error('ID de usuario no válido.'); } const page = parseInt(req.query.page) || 1; const limit = 10; const transactionsFilter = { user: id }; const totalTransactions = await Transaction.countDocuments(transactionsFilter); const [user, referrals, cryptoWallets, transactions] = await Promise.all([ User.findById(id).select('-password').lean(), User.find({ referredBy: id }).select('username fullName telegramId photoFileId createdAt').lean(), CryptoWallet.find({ user: id }).lean(), Transaction.find(transactionsFilter).sort({ createdAt: -1 }).limit(limit).skip(limit * (page - 1)).lean() ]); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } const [userPhotoUrl, referralsWithPhoto] = await Promise.all([ getTemporaryPhotoUrl(user.photoFileId), Promise.all(referrals.map(async (ref) => ({ ...ref, photoUrl: await getTemporaryPhotoUrl(ref.photoFileId) || PLACEHOLDER_AVATAR_URL }))) ]); res.json({ user: { ...user, photoUrl: userPhotoUrl || PLACEHOLDER_AVATAR_URL }, referrals: referralsWithPhoto, cryptoWallets, transactions: { items: transactions, page, totalPages: Math.ceil(totalTransactions / limit), totalItems: totalTransactions } }); });
 const adjustUserBalance = asyncHandler(async (req, res) => { const { id } = req.params; const { type, currency, amount, reason } = req.body; if (!['admin_credit', 'admin_debit'].includes(type) || !['USDT'].includes(currency) || !amount || !reason) { res.status(400); throw new Error("Parámetros inválidos. Moneda debe ser USDT."); } const session = await mongoose.startSession(); try { session.startTransaction(); const currencyKey = currency.toLowerCase(); let updateOperation = {}; if (type === 'admin_credit') { updateOperation = { $inc: { [`balance.${currencyKey}`]: amount, totalRecharge: amount } }; } else { const userCheck = await User.findById(id).select(`balance.${currencyKey}`).session(session); if (!userCheck || (userCheck.balance[currencyKey] || 0) < amount) { throw new Error('Saldo insuficiente para realizar el débito.'); } updateOperation = { $inc: { [`balance.${currencyKey}`]: -amount } }; } const user = await User.findByIdAndUpdate(id, updateOperation, { new: true, session }); if (!user) throw new Error('Usuario no encontrado.'); const transaction = new Transaction({ user: id, type, currency, amount, status: 'completed', description: reason, metadata: { adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(200).json({ message: 'Saldo ajustado exitosamente.', user }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
-
-// --- INICIO DE MODIFICACIÓN QUIRÚRGICA ---
-const getAllUsers = asyncHandler(async (req, res) => {
-    const pageSize = 10;
-    const page = Number(req.query.page) || 1;
-    const filter = req.query.search ? { $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] } : {};
-    
-    const count = await User.countDocuments(filter);
-    const users = await User.find(filter)
-        // CAMBIO: Se añaden 'mustPurchaseToWithdraw' y 'isBanned' para que estos datos
-        // estén disponibles en la lista de usuarios del panel de admin.
-        .select('username telegramId role status createdAt balance.usdt photoFileId mustPurchaseToWithdraw isBanned')
-        .sort({ createdAt: -1 })
-        .limit(pageSize)
-        .skip(pageSize * (page - 1))
-        .lean();
-        
-    const usersWithPhotoUrl = await Promise.all(users.map(async (user) => ({ ...user, photoUrl: await getTemporaryPhotoUrl(user.photoFileId) || PLACEHOLDER_AVATAR_URL })));
-    res.json({ users: usersWithPhotoUrl, page, pages: Math.ceil(count / pageSize), totalUsers: count });
-});
-// --- FIN DE MODIFICACIÓN QUIRÚRGICA ---
-
-const updateUser = asyncHandler(async (req, res) => {
-    const { username, password, balanceUsdt, mustPurchaseToWithdraw, isBanned, status } = req.body; // Se añade isBanned y status
-    const user = await User.findById(req.params.id);
-
-    if (!user) {
-        res.status(404);
-        throw new Error('Usuario no encontrado.');
-    }
-
-    user.username = username ?? user.username;
-    user.balance.usdt = balanceUsdt ?? user.balance.usdt;
-    user.status = status ?? user.status;
-
-    if (mustPurchaseToWithdraw !== undefined && typeof mustPurchaseToWithdraw === 'boolean') {
-      user.mustPurchaseToWithdraw = mustPurchaseToWithdraw;
-    }
-    
-    // Suponiendo que el modelo de usuario tiene un campo 'isBanned'
-    if (isBanned !== undefined && typeof isBanned === 'boolean') {
-        user.isBanned = isBanned;
-    }
-
-    if (password) {
-        user.password = password;
-        if (user.role === 'admin' && req.user.telegramId === process.env.ADMIN_TELEGRAM_ID) {
-            user.passwordResetRequired = true;
-        }
-    }
-    
-    const updatedUser = await user.save();
-    res.json(updatedUser);
-});
-
-// --- LÓGICA EXISTENTE (SIN CAMBIOS) ---
+const getAllUsers = asyncHandler(async (req, res) => { const pageSize = 10; const page = Number(req.query.page) || 1; const filter = req.query.search ? { $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] } : {}; const count = await User.countDocuments(filter); const users = await User.find(filter).select('username telegramId role status createdAt balance.usdt photoFileId mustPurchaseToWithdraw isBanned').sort({ createdAt: -1 }).limit(pageSize).skip(pageSize * (page - 1)).lean(); const usersWithPhotoUrl = await Promise.all(users.map(async (user) => ({ ...user, photoUrl: await getTemporaryPhotoUrl(user.photoFileId) || PLACEHOLDER_AVATAR_URL }))); res.json({ users: usersWithPhotoUrl, page, pages: Math.ceil(count / pageSize), totalUsers: count }); });
+const updateUser = asyncHandler(async (req, res) => { const { username, password, balanceUsdt, mustPurchaseToWithdraw, isBanned, status } = req.body; const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } user.username = username ?? user.username; user.balance.usdt = balanceUsdt ?? user.balance.usdt; user.status = status ?? user.status; if (mustPurchaseToWithdraw !== undefined) { user.mustPurchaseToWithdraw = mustPurchaseToWithdraw; } if (isBanned !== undefined) { user.isBanned = isBanned; user.status = isBanned ? 'banned' : 'active'; } if (password) { user.password = password; if (user.role === 'admin' && req.user.telegramId === process.env.ADMIN_TELEGRAM_ID) { user.passwordResetRequired = true; } } const updatedUser = await user.save(); res.json(updatedUser); });
 const setUserStatus = asyncHandler(async (req, res) => { const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user._id.equals(req.user._id)) { res.status(400); throw new Error('No puedes cambiar tu propio estado.'); } user.status = req.body.status; const updatedUser = await user.save(); res.json(updatedUser); });
 const getAllTransactions = asyncHandler(async (req, res) => { const pageSize = 15; const page = Number(req.query.page) || 1; let filter = {}; if (req.query.type) { filter.type = req.query.type; } if (req.query.search) { const usersFound = await User.find({ $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] }).select('_id'); filter.user = { $in: usersFound.map(user => user._id) }; } const count = await Transaction.countDocuments(filter); const transactions = await Transaction.find(filter).sort({ createdAt: -1 }).populate('user', 'username telegramId').limit(pageSize).skip(pageSize * (page - 1)).lean(); res.json({ transactions, page, pages: Math.ceil(count / pageSize), totalTransactions: count }); });
 const createManualTransaction = asyncHandler(async (req, res) => { const { userId, type, currency, amount, reason } = req.body; const session = await mongoose.startSession(); try { session.startTransaction(); const user = await User.findById(userId).session(session); if (!user) throw new Error('Usuario no encontrado.'); const currencyKey = currency.toLowerCase(); const originalBalance = user.balance[currencyKey] || 0; if (type === 'admin_credit') { user.balance[currencyKey] += amount; } else { if (originalBalance < amount) throw new Error('Saldo insuficiente para realizar el débito.'); user.balance[currencyKey] -= amount; } const updatedUser = await user.save({ session }); const transaction = new Transaction({ user: userId, type, currency, amount, description: reason, status: 'completed', metadata: { adminId: req.user._id.toString(), adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(201).json({ message: 'Transacción manual creada.', user: updatedUser.toObject() }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
@@ -94,40 +69,8 @@ const getAllFactories = asyncHandler(async (req, res) => { const factories = awa
 const createFactory = asyncHandler(async (req, res) => { const newFactory = await Factory.create(req.body); res.status(201).json(newFactory); });
 const updateFactory = asyncHandler(async (req, res) => { const factory = await Factory.findByIdAndUpdate(req.params.id, req.body, { new: true }); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); res.json(factory); });
 const deleteFactory = asyncHandler(async (req, res) => { const factory = await Factory.findById(req.params.id); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); await factory.deleteOne(); res.json({ message: 'Fábrica eliminada.' }); });
-
-// --- INICIO DE MODIFICACIÓN QUIRÚRGICA ---
-const getSettings = asyncHandler(async (req, res) => {
-    // CAMBIO: Se utiliza el método estático del modelo para asegurar que la configuración siempre exista.
-    // Se alinea con la estructura de 'settingsModel.js' que usa _id: 'global_settings'.
-    const settings = await Setting.getSettings();
-    res.json(settings);
-});
-
-const updateSettings = asyncHandler(async (req, res) => {
-    // Se extraen todos los campos relevantes del body.
-    const {
-        maintenanceMode,
-        withdrawalsEnabled,
-        minWithdrawal,
-        withdrawalFeePercent,
-        forcePurchaseOnAllWithdrawals
-    } = req.body;
-    
-    // CAMBIO: Se busca por el _id fijo y se actualiza, creando el documento si no existe (upsert).
-    // Esto se alinea con el 'settingsModel.js' proporcionado.
-    const updatedSettings = await Setting.findByIdAndUpdate('global_settings', {
-        maintenanceMode,
-        withdrawalsEnabled,
-        minWithdrawal,
-        withdrawalFeePercent,
-        forcePurchaseOnAllWithdrawals
-    }, { new: true, upsert: true, runValidators: true });
-    
-    res.json(updatedSettings);
-});
-// --- FIN DE MODIFICACIÓN QUIRÚRGICA ---
-
-// --- LÓGICA EXISTENTE (SIN CAMBIOS) ---
+const getSettings = asyncHandler(async (req, res) => { const settings = await Setting.getSettings(); res.json(settings); });
+const updateSettings = asyncHandler(async (req, res) => { const { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals } = req.body; const updatedSettings = await Setting.findByIdAndUpdate('global_settings', { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals }, { new: true, upsert: true, runValidators: true }); res.json(updatedSettings); });
 const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `MegaFabrica Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
 const verifyAndEnableTwoFactor = asyncHandler(async (req, res) => { const { token } = req.body; const user = await User.findById(req.user.id).select('+twoFactorSecret'); if (!user || !user.twoFactorSecret) return res.status(400).json({ message: 'No se ha generado un secreto 2FA.' }); const verified = speakeasy.totp.verify({ secret: user.twoFactorSecret, encoding: 'base32', token }); if (verified) { user.isTwoFactorEnabled = true; await user.save(); res.json({ message: '¡2FA habilitado!' }); } else { res.status(400).json({ message: 'Token inválido.' }); }});
 const getWalletBalance = asyncHandler(async (req, res) => { const { address, chain } = req.body; if (!address || !chain) { res.status(400); throw new Error('Se requiere address y chain'); } try { const balances = await _getBalancesForAddress(address, chain); res.json({ success: true, balances }); } catch (error) { res.status(500).json({ success: false, message: error.message }); }});

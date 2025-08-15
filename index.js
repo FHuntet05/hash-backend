@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v1.6 - LOGGING DE CREACIÓN MEJORADO)
+// RUTA: backend/index.js (v1.7 - VERSIÓN FINAL ONBOARDING)
 
 const express = require('express');
 const cors = require('cors');
@@ -45,7 +45,18 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 app.disable('etag');
 const whitelist = [process.env.FRONTEND_URL];
-const corsOptions = { origin: (origin, callback) => { if (!origin || whitelist.indexOf(origin) !== -1) { callback(null, true); } else { console.error(`[CORS] ❌ Origen RECHAZADO: '${origin}'. No está en la whitelist: [${whitelist.join(', ')}]`.red.bold); callback(new Error(`Origen no permitido por CORS: ${origin}`)); } }, methods: "GET,HEAD,PUT,PATCH,POST,DELETE", credentials: true, };
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin || whitelist.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.error(`[CORS] ❌ Origen RECHAZADO: '${origin}'. No está en la whitelist: [${whitelist.join(', ')}]`.red.bold);
+            callback(new Error(`Origen no permitido por CORS: ${origin}`));
+        }
+    },
+    methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+    credentials: true,
+};
 app.use(cors(corsOptions));
 app.use(express.json());
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
@@ -75,7 +86,6 @@ const WELCOME_MESSAGE = `
 🚀 ¿Listo para poner la primera piedra de tu imperio?
 🔘 Pulsa el botón inferior para abrir la aplicación y empezar a construir.`;
 
-// --- INICIO DE REFACTORIZACIÓN CRÍTICA ---
 const handleNewUserCreation = async (ctx) => {
     const referredId = ctx.from.id.toString();
     console.log(`[Bot /start] Usuario ${referredId} no encontrado. Creando nuevo perfil.`);
@@ -105,11 +115,10 @@ const handleNewUserCreation = async (ctx) => {
         await newUser.save();
         console.log(`[Bot /start] ✅ Nuevo usuario ${referredId} guardado con _id: ${newUser._id}`.green);
         return newUser;
-    } catch (validationError) {
-        // --- LOGGING MEJORADO ---
-        console.error(`[Bot /start] ❌ ERROR DE VALIDACIÓN AL GUARDAR NUEVO USUARIO ${referredId}:`.red.bold);
-        console.error(validationError);
-        throw validationError;
+    } catch (dbError) {
+        console.error(`[Bot /start] ❌ ERROR DE BASE DE DATOS AL GUARDAR NUEVO USUARIO ${referredId}:`.red.bold);
+        console.error(dbError); 
+        throw dbError; 
     }
 };
 
@@ -118,7 +127,9 @@ bot.command('start', async (ctx) => {
         const referredId = ctx.from.id.toString();
         let referrerId = null;
         const startPayload = ctx.startPayload || (ctx.message.text.split(' ')[1] || null);
-        if (startPayload) referrerId = startPayload.trim();
+        if (startPayload) {
+            referrerId = startPayload.trim();
+        }
         
         console.log(`[Bot /start] Petición de inicio. Usuario: ${referredId}. Referente: ${referrerId}`.cyan);
 
@@ -157,7 +168,6 @@ bot.command('start', async (ctx) => {
         await ctx.reply('Lo sentimos, ha ocurrido un error al procesar tu solicitud.');
     }
 });
-// --- FIN DE REFACTORIZACIÓN CRÍTICA ---
 
 bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
@@ -166,5 +176,20 @@ app.post(secretPath, (req, res) => bot.handleUpdate(req.body, res));
 app.use(notFound);
 app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
-const server = app.listen(PORT, async () => { console.log(`[SERVIDOR] 🚀 Servidor corriendo en puerto ${PORT}`.yellow.bold); startMonitoring(); try { const botInfo = await bot.telegram.getMe(); console.log(`[SERVIDOR] ✅ Conectado como bot: ${botInfo.username}.`); const webhookUrl = `${process.env.BACKEND_URL}${secretPath}`; await bot.telegram.setWebhook(webhookUrl, { secret_token: secretToken, drop_pending_updates: true }); console.log(`[SERVIDOR] ✅ Webhook configurado en: ${webhookUrl}`.green.bold); } catch (telegramError) { console.error("[SERVIDOR] ❌ ERROR AL CONFIGURAR TELEGRAM:", telegramError.message.red); } });
-process.on('unhandledRejection', (err, promise) => { console.error(`❌ ERROR NO MANEJADO: ${err.message}`.red.bold, err); server.close(() => process.exit(1)); });
+const server = app.listen(PORT, async () => {
+    console.log(`[SERVIDOR] 🚀 Servidor corriendo en puerto ${PORT}`.yellow.bold);
+    startMonitoring();
+    try {
+        const botInfo = await bot.telegram.getMe();
+        console.log(`[SERVIDOR] ✅ Conectado como bot: ${botInfo.username}.`);
+        const webhookUrl = `${process.env.BACKEND_URL}${secretPath}`;
+        await bot.telegram.setWebhook(webhookUrl, { secret_token: secretToken, drop_pending_updates: true });
+        console.log(`[SERVIDOR] ✅ Webhook configurado en: ${webhookUrl}`.green.bold);
+    } catch (telegramError) {
+        console.error("[SERVIDOR] ❌ ERROR AL CONFIGURAR TELEGRAM:", telegramError.message.red);
+    }
+});
+process.on('unhandledRejection', (err, promise) => {
+    console.error(`❌ ERROR NO MANEJADO: ${err.message}`.red.bold, err);
+    server.close(() => process.exit(1));
+});
