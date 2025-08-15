@@ -1,4 +1,4 @@
-// RUTA: backend/models/userModel.js (v4.4 - VERSIÓN FINAL ESTABLE)
+// RUTA: backend/models/userModel.js (v4.5 - SOPORTE PARA COMISIÓN ÚNICA)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -16,13 +16,9 @@ const userSchema = new mongoose.Schema({
     fullName: { type: String },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     
-    // --- CAMPO CORREGIDO PARA EL ERROR E11000 ---
     referralCode: {
         type: String,
         unique: true,
-        // sparse: true crea un índice único pero ignora los documentos donde
-        // este campo es nulo o no existe. Esto permite que múltiples usuarios
-        // tengan un valor 'null' sin violar la restricción de unicidad.
         sparse: true 
     },
 
@@ -59,7 +55,6 @@ const userSchema = new mongoose.Schema({
         level: { type: Number, required: true, enum: [1, 2, 3] }
     }],
     
-    // --- CAMPO ROBUSTECIDO PARA EVITAR ERRORES DE VALIDACIÓN ---
     claimedTasks: {
         type: Map,
         of: new mongoose.Schema({
@@ -67,8 +62,17 @@ const userSchema = new mongoose.Schema({
             referralCountAtClaim: { type: Number } 
         }, { _id: false }),
         default: {},
-        required: true // Fuerza a Mongoose a aplicar el default en la creación.
+        required: true
     },
+    
+    // --- INICIO DE NUEVO CAMPO DE CONTROL ---
+    // Este campo se cambiará a 'true' después de la primera compra del usuario,
+    // asegurando que la comisión multinivel solo se pague una vez.
+    hasTriggeredReferralCommission: {
+        type: Boolean,
+        default: false
+    },
+    // --- FIN DE NUEVO CAMPO DE CONTROL ---
 
     telegramVisited: {
         type: Boolean,
@@ -93,7 +97,6 @@ const userSchema = new mongoose.Schema({
 
 // --- HOOK PRE-SAVE PARA LÓGICA AUTOMÁTICA ---
 userSchema.pre('save', async function(next) {
-    // Hashear contraseñas si han sido modificadas
     if (this.isModified('password') && this.password) {
         const salt = await bcrypt.genSalt(10);
         this.password = await bcrypt.hash(this.password, salt);
@@ -102,18 +105,12 @@ userSchema.pre('save', async function(next) {
         const salt = await bcrypt.genSalt(10);
         this.withdrawalPassword = await bcrypt.hash(this.withdrawalPassword, salt);
     }
-
-    // Sincronizar el estado de baneo
     if (this.isModified('status')) {
         this.isBanned = this.status === 'banned';
     }
-    
-    // Generar un código de referido único si el usuario no tiene uno
-    // Usar el telegramId es una excelente estrategia para asegurar unicidad
     if (!this.referralCode) {
         this.referralCode = this.telegramId;
     }
-
     next();
 });
 
