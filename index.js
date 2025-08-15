@@ -162,7 +162,7 @@ bot.command('start', async (ctx) => {
             }
         }
         
-        const imageUrl = 'https://i.postimg.cc/8PqYj4zR/nicebot.jpg';
+        const imageUrl = 'https://i.postimg.cc/qqFZGPVD/MGFAB.jpg';
         const webAppUrl = process.env.FRONTEND_URL;
         
         await ctx.replyWithPhoto(imageUrl, {

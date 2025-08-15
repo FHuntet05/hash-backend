@@ -11,7 +11,7 @@ const TASKS_CONFIG = {
     INVITE_5: { reward: 0.3, target: 5 },
     INVITE_10: { reward: 0.5, target: 10 },
     INVITE_20: { reward: 1.0, target: 20 },
-    TELEGRAM_VISIT: { reward: 0.2, actionUrl: "https://t.me/MegaFabricaOficial" }
+    TELEGRAM_VISIT: { reward: 0.1, actionUrl: "https://t.me/MegaFabricaOficial" }
 };
 
 const INVITE_ORDER = ['INVITE_3', 'INVITE_5', 'INVITE_10', 'INVITE_20'];
