@@ -1,15 +1,17 @@
-// RUTA: backend/controllers/taskController.js (v27.1 - BLINDADO CONTRA ERROR DE VALIDACIÓN)
+// RUTA: backend/controllers/taskController.js (v28.0 - INTERNACIONALIZACIÓN)
 const asyncHandler = require('express-async-handler');
 const User = require('../models/userModel.js');
 const Factory = require('../models/factoryModel.js'); 
 
+// Ya no necesitamos texto aquí, el frontend se encargará de ello.
+// Mantenemos la configuración para la lógica de recompensas y objetivos.
 const TASKS_CONFIG = {
-    FIRST_PURCHASE: { title: "Primera Compra", description: "Compra cualquier fábrica en la tienda.", reward: 0.3, actionUrl: "/factories" },
-    INVITE_3: { title: "Invitar 3 Amigos", description: "Tu equipo debe tener al menos 3 miembros de Nivel 1.", reward: 0.1, target: 3 },
-    INVITE_5: { title: "Invitar 5 Amigos", description: "Tu equipo debe tener al menos 5 miembros de Nivel 1.", reward: 0.3, target: 5 },
-    INVITE_10: { title: "Invitar 10 Amigos", description: "Tu equipo debe tener al menos 10 miembros de Nivel 1.", reward: 0.5, target: 10 },
-    INVITE_20: { title: "Invitar 20 Amigos", description: "Tu equipo debe tener al menos 20 miembros de Nivel 1.", reward: 1.0, target: 20 },
-    TELEGRAM_VISIT: { title: "Unirse a la Comunidad", description: "Visita nuestro grupo oficial de Telegram.", reward: 0.2, actionUrl: "https://t.me/MegaFabricaOficial" }
+    FIRST_PURCHASE: { reward: 0.3, actionUrl: "/factories" },
+    INVITE_3: { reward: 0.1, target: 3 },
+    INVITE_5: { reward: 0.3, target: 5 },
+    INVITE_10: { reward: 0.5, target: 10 },
+    INVITE_20: { reward: 1.0, target: 20 },
+    TELEGRAM_VISIT: { reward: 0.2, actionUrl: "https://t.me/MegaFabricaOficial" }
 };
 
 const INVITE_ORDER = ['INVITE_3', 'INVITE_5', 'INVITE_10', 'INVITE_20'];
@@ -48,76 +50,57 @@ const getTaskStatus = asyncHandler(async (req, res) => {
                     previousTaskClaimed = false;
                 }
             }
-            
-            if (!previousTaskClaimed) {
-                status = 'LOCKED';
-            } else {
+            if (!previousTaskClaimed) { status = 'LOCKED'; }
+            else {
                 progress = Math.max(0, level1ReferralCount - lastClaimedReferralCount);
                 const isCompleted = progress >= task.target;
-
-                if (isClaimed) {
-                    status = 'CLAIMED';
-                } else if (isCompleted) {
-                    status = 'COMPLETED_NOT_CLAIMED';
-                }
+                if (isClaimed) { status = 'CLAIMED'; }
+                else if (isCompleted) { status = 'COMPLETED_NOT_CLAIMED'; }
             }
         } else {
             let isCompleted = false;
             if (taskId === 'FIRST_PURCHASE') isCompleted = hasMadeFirstPurchase;
             if (taskId === 'TELEGRAM_VISIT') isCompleted = true;
-
-            if (isClaimed) {
-                status = 'CLAIMED';
-            } else if (isCompleted) {
-                status = 'COMPLETED_NOT_CLAIMED';
-            }
+            if (isClaimed) { status = 'CLAIMED'; }
+            else if (isCompleted) { status = 'COMPLETED_NOT_CLAIMED'; }
         }
         
+        // --- INICIO DE MODIFICACIÓN CRÍTICA ---
+        // Se eliminan los campos 'title' y 'description'.
+        // El frontend reconstruirá el texto usando las claves.
         responseTasks.push({
-            taskId,
-            title: task.title,
-            description: task.description,
+            taskId, // e.g., 'INVITE_3'
             reward: task.reward,
             status,
             progress: progress,
             target: task.target || 0,
             actionUrl: task.actionUrl || null
         });
+        // --- FIN DE MODIFICACIÓN CRÍTICA ---
     }
-
     res.json(responseTasks);
 });
 
 const claimTaskReward = asyncHandler(async (req, res) => {
+    // ... La lógica de esta función no necesita cambios,
+    // ya que usa el taskId para obtener la recompensa, no el texto.
+    // Se mantiene la versión v27.1 de este archivo para esta función.
     const { taskId } = req.body;
     const userId = req.user.id;
-
     const taskConfig = TASKS_CONFIG[taskId];
-    if (!taskConfig) {
-        res.status(400); throw new Error('Tarea no válida.');
-    }
-
+    if (!taskConfig) { res.status(400); throw new Error('Tarea no válida.'); }
     const user = await User.findById(userId).populate('purchasedFactories.factory');
-    if (!user) {
-        res.status(404); throw new Error('Usuario no encontrado');
-    }
-
-    if (user.claimedTasks.has(taskId)) {
-        res.status(400); throw new Error('Ya has reclamado esta recompensa.');
-    }
-
+    if (!user) { res.status(404); throw new Error('Usuario no encontrado'); }
+    if (user.claimedTasks.has(taskId)) { res.status(400); throw new Error('Ya has reclamado esta recompensa.'); }
     const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
     let isCompleted = false;
     let lastClaimedReferralCount = 0;
-
     if (taskId.startsWith('INVITE_')) {
         const inviteIndex = INVITE_ORDER.indexOf(taskId);
         if (inviteIndex > 0) {
             const previousTaskId = INVITE_ORDER[inviteIndex - 1];
             const prevTaskData = user.claimedTasks.get(previousTaskId);
-            if (!prevTaskData || !prevTaskData.claimed) {
-                res.status(400); throw new Error('Debes reclamar la recompensa de la tarea anterior primero.');
-            }
+            if (!prevTaskData || !prevTaskData.claimed) { res.status(400); throw new Error('Debes reclamar la recompensa de la tarea anterior primero.'); }
             lastClaimedReferralCount = prevTaskData.referralCountAtClaim;
         }
         const progress = level1ReferralCount - lastClaimedReferralCount;
@@ -127,39 +110,17 @@ const claimTaskReward = asyncHandler(async (req, res) => {
     } else if (taskId === 'TELEGRAM_VISIT') {
         isCompleted = true;
     }
-    
-    if (!isCompleted) {
-        res.status(400); throw new Error('La tarea aún no está completada.');
-    }
-    
+    if (!isCompleted) { res.status(400); throw new Error('La tarea aún no está completada.'); }
     const reward = taskConfig.reward;
-    const transaction = {
-        type: 'task_reward', amount: reward, currency: 'USDT', description: `Recompensa de tarea: ${taskConfig.title}`
-    };
-
-    // --- INICIO DE CORRECCIÓN CRÍTICA ---
-    // Nos aseguramos de guardar siempre un OBJETO en el Map, nunca un booleano.
-    const taskDataToSave = {
-        claimed: true,
-        // Solo guardamos el conteo de referidos si es una tarea de invitación.
-        referralCountAtClaim: taskId.startsWith('INVITE_') ? level1ReferralCount : undefined
-    };
-
+    // El frontend se encargará de traducir el título para el toast.
+    const transaction = { type: 'task_reward', amount: reward, currency: 'USDT', description: `Recompensa de tarea: ${taskId}` };
+    const taskDataToSave = { claimed: true, referralCountAtClaim: taskId.startsWith('INVITE_') ? level1ReferralCount : undefined };
     user.balance.usdt += reward;
     user.transactions.push(transaction);
-    user.claimedTasks.set(taskId, taskDataToSave); // Usamos .set() para actualizar el Map
-
-    if (taskId === 'TELEGRAM_VISIT' && !user.telegramVisited) {
-        user.telegramVisited = true;
-    }
-    // --- FIN DE CORRECCIÓN CRÍTICA ---
-
+    user.claimedTasks.set(taskId, taskDataToSave);
+    if (taskId === 'TELEGRAM_VISIT' && !user.telegramVisited) { user.telegramVisited = true; }
     const updatedUser = await user.save();
-
-    res.json({ 
-        message: `¡Recompensa de +${reward.toFixed(2)} USDT reclamada!`,
-        user: updatedUser 
-    });
+    res.json({ message: `¡Recompensa de +${reward.toFixed(2)} USDT reclamada!`, user: updatedUser });
 });
 
 module.exports = {

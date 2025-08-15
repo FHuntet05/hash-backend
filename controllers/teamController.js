@@ -1,7 +1,6 @@
-// backend/controllers/teamController.js (v22.1 - CORRECCIÓN DE CONTEO DE MIEMBROS)
+// backend/controllers/teamController.js (v23.0 - LÓGICA DE ESTADÍSTICAS POR AGREGACIÓN)
 
 const User = require('../models/userModel');
-const Transaction = require('../models/transactionModel');
 const mongoose = require('mongoose');
 
 const getTeamStats = async (req, res) => {
@@ -9,84 +8,83 @@ const getTeamStats = async (req, res) => {
     const userId = new mongoose.Types.ObjectId(req.user.id);
 
     // 1. Obtener la jerarquía completa de referidos del usuario
-    // --- INICIO DE CORRECCIÓN ---
-    // Se elimina .select('referrals') para permitir que populate funcione correctamente
-    // en todos los niveles y traiga toda la data necesaria.
     const userWithTeam = await User.findById(userId)
-        .populate({
-    // --- FIN DE CORRECCIÓN ---
+      .populate({
+        path: 'referrals.user',
+        select: '_id referrals',
+        populate: {
+          path: 'referrals.user',
+          select: '_id referrals',
+          populate: {
             path: 'referrals.user',
-            select: '_id username referrals', // Seleccionar solo lo necesario
-            populate: {
-                path: 'referrals.user',
-                select: '_id username referrals',
-                populate: {
-                    path: 'referrals.user',
-                    select: '_id username'
-                }
-            }
-        }).lean(); // .lean() para un rendimiento óptimo
+            select: '_id'
+          }
+        }
+      }).lean();
 
     if (!userWithTeam) {
-        return res.status(404).json({ message: "Usuario no encontrado" });
+      return res.status(404).json({ message: "Usuario no encontrado" });
     }
 
-    // 2. Organizar a los miembros y sus IDs por nivel (Lógica sin cambios)
-    const teamMembersByLevel = { 1: [], 2: [], 3: [] };
-    const allTeamMemberIds = [];
-
+    // 2. Aplanar la estructura de referidos y contar miembros por nivel
+    const membersByLevel = { 1: 0, 2: 0, 3: 0 };
     (userWithTeam.referrals || []).forEach(ref1 => {
-        if (!ref1.user) return;
-        teamMembersByLevel[1].push(ref1.user);
-        allTeamMemberIds.push(ref1.user._id);
-
+      if (ref1.user) {
+        membersByLevel[1]++;
         (ref1.user.referrals || []).forEach(ref2 => {
-            if (!ref2.user) return;
-            teamMembersByLevel[2].push(ref2.user);
-            allTeamMemberIds.push(ref2.user._id);
-
+          if (ref2.user) {
+            membersByLevel[2]++;
             (ref2.user.referrals || []).forEach(ref3 => {
-                if (!ref3.user) return;
-                teamMembersByLevel[3].push(ref3.user);
-                allTeamMemberIds.push(ref3.user._id);
+              if (ref3.user) {
+                membersByLevel[3]++;
+              }
             });
+          }
         });
+      }
     });
 
-    // 3. Obtener todas las comisiones generadas por el equipo de una sola vez
-    // NOTA: Esta lógica asume un modelo 'Transaction' separado.
-    const commissionTransactions = await Transaction.find({
-        user: userId, // Comisiones pagadas A MI
-        type: 'commission',
-        'metadata.buyerId': { $in: allTeamMemberIds } // generadas POR alguien de mi equipo
-    }).select('amount metadata.buyerId').lean();
-
-    // 4. Procesar los datos para calcular las comisiones por nivel (Lógica sin cambios)
-    const commissionsByLevel = { 1: 0, 2: 0, 3: 0 };
-    const memberIdsLevel1 = new Set(teamMembersByLevel[1].map(u => u._id.toString()));
-    const memberIdsLevel2 = new Set(teamMembersByLevel[2].map(u => u._id.toString()));
-    const memberIdsLevel3 = new Set(teamMembersByLevel[3].map(u => u._id.toString()));
-
-    commissionTransactions.forEach(tx => {
-        const buyerIdStr = tx.metadata.buyerId.toString();
-        if (memberIdsLevel1.has(buyerIdStr)) {
-            commissionsByLevel[1] += tx.amount;
-        } else if (memberIdsLevel2.has(buyerIdStr)) {
-            commissionsByLevel[2] += tx.amount;
-        } else if (memberIdsLevel3.has(buyerIdStr)) {
-            commissionsByLevel[3] += tx.amount;
+    // --- INICIO DE LÓGICA DE CÁLCULO DE COMISIONES POR AGREGACIÓN ---
+    // 3. Usamos el framework de agregación de MongoDB para un cálculo eficiente.
+    const commissionStats = await User.aggregate([
+      // Paso A: Encontrar al usuario actual
+      { $match: { _id: userId } },
+      
+      // Paso B: "Desenredar" el array de transacciones para procesar cada una individualmente
+      { $unwind: '$transactions' },
+      
+      // Paso C: Filtrar solo las transacciones que son de comisiones de referido
+      { $match: { 'transactions.type': 'referral_commission' } },
+      
+      // Paso D: Agrupar por nivel de comisión y sumar los montos
+      {
+        $group: {
+          _id: '$transactions.metadata.commissionLevel', // Agrupar por Nivel 1, 2, o 3
+          totalAmount: { $sum: '$transactions.amount' }   // Sumar el monto de cada comisión
         }
+      }
+    ]);
+
+    // 4. Formatear los resultados de la agregación en un objeto fácil de usar
+    const commissionsByLevel = { 1: 0, 2: 0, 3: 0 };
+    let totalCommission = 0;
+    commissionStats.forEach(stat => {
+      if (stat._id) { // stat._id contendrá el nivel (1, 2, 3)
+        commissionsByLevel[stat._id] = stat.totalAmount;
+        totalCommission += stat.totalAmount;
+      }
     });
+    // --- FIN DE LÓGICA DE CÁLCULO DE COMISIONES POR AGREGACIÓN ---
 
     // 5. Construir el objeto de respuesta final
     const stats = {
-        totalTeamMembers: allTeamMemberIds.length,
-        totalCommission: commissionTransactions.reduce((sum, tx) => sum + tx.amount, 0),
-        levels: [
-            { level: 1, totalMembers: teamMembersByLevel[1].length, totalCommission: commissionsByLevel[1] },
-            { level: 2, totalMembers: teamMembersByLevel[2].length, totalCommission: commissionsByLevel[2] },
-            { level: 3, totalMembers: teamMembersByLevel[3].length, totalCommission: commissionsByLevel[3] },
-        ],
+      totalTeamMembers: membersByLevel[1] + membersByLevel[2] + membersByLevel[3],
+      totalCommission: totalCommission,
+      levels: [
+        { level: 1, totalMembers: membersByLevel[1], totalCommission: commissionsByLevel[1] },
+        { level: 2, totalMembers: membersByLevel[2], totalCommission: commissionsByLevel[2] },
+        { level: 3, totalMembers: membersByLevel[3], totalCommission: commissionsByLevel[3] },
+      ],
     };
 
     res.json(stats);
@@ -97,64 +95,20 @@ const getTeamStats = async (req, res) => {
   }
 };
 
+// Se mantiene la función getLevelDetails sin cambios, ya que su propósito es diferente.
 const getLevelDetails = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
     const requestedLevel = parseInt(req.params.level, 10);
-
-    if (![1, 2, 3].includes(requestedLevel)) {
-      return res.status(400).json({ message: 'Nivel no válido.' });
-    }
-
-    const user = await User.findById(userId).populate({
-      path: 'referrals.user',
-      select: 'username photoFileId balance referrals',
-      populate: {
-        path: 'referrals.user',
-        select: 'username photoFileId balance referrals',
-        populate: {
-          path: 'referrals.user',
-          select: 'username photoFileId balance'
-        }
-      }
-    });
-
-    if (!user) {
-      return res.json([]);
-    }
-
+    if (![1, 2, 3].includes(requestedLevel)) { return res.status(400).json({ message: 'Nivel no válido.' }); }
+    const user = await User.findById(userId).populate({ path: 'referrals.user', select: 'username photoFileId balance referrals', populate: { path: 'referrals.user', select: 'username photoFileId balance referrals', populate: { path: 'referrals.user', select: 'username photoFileId balance' } } });
+    if (!user) { return res.json([]); }
     let levelMembers = [];
-
-    if (requestedLevel === 1) {
-      levelMembers = user.referrals.map(r => r.user);
-    } else if (requestedLevel === 2) {
-      user.referrals.forEach(r1 => {
-        if (r1.user && r1.user.referrals) {
-          levelMembers.push(...r1.user.referrals.map(r2 => r2.user));
-        }
-      });
-    } else if (requestedLevel === 3) {
-      user.referrals.forEach(r1 => {
-        if (r1.user && r1.user.referrals) {
-          r1.user.referrals.forEach(r2 => {
-            if (r2.user && r2.user.referrals) {
-              levelMembers.push(...r2.user.referrals.map(r3 => r3.user));
-            }
-          });
-        }
-      });
-    }
-
-    const finalResponse = levelMembers
-      .filter(Boolean)
-      .map(member => ({
-        username: member.username,
-        photoUrl: member.photoUrl,
-        score: parseFloat((member.balance?.usdt || 0).toFixed(2))
-      }));
-
+    if (requestedLevel === 1) { levelMembers = user.referrals.map(r => r.user); }
+    else if (requestedLevel === 2) { user.referrals.forEach(r1 => { if (r1.user && r1.user.referrals) { levelMembers.push(...r1.user.referrals.map(r2 => r2.user)); } }); }
+    else if (requestedLevel === 3) { user.referrals.forEach(r1 => { if (r1.user && r1.user.referrals) { r1.user.referrals.forEach(r2 => { if (r2.user && r2.user.referrals) { levelMembers.push(...r2.user.referrals.map(r3 => r3.user)); } }); } }); }
+    const finalResponse = levelMembers.filter(Boolean).map(member => ({ username: member.username, photoUrl: member.photoUrl, score: parseFloat((member.balance?.usdt || 0).toFixed(2)) }));
     res.json(finalResponse);
-
   } catch (error) {
     console.error(`Error al obtener detalles del nivel ${req.params.level}:`, error);
     res.status(500).json({ message: 'Error del servidor' });
