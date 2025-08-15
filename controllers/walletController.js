@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/walletController.js (v4.3 - INTEGRADO CON SERVICIO DE COMISIONES)
+// RUTA: backend/controllers/walletController.js (v5.0 - GENERACIÓN HD SEGURA Y CORRECCIÓN BUG-011)
 
 const asyncHandler = require('express-async-handler');
 const User = require('../models/userModel');
@@ -6,7 +6,10 @@ const Factory = require('../models/factoryModel');
 const Transaction = require('../models/transactionModel');
 const Settings = require('../models/settingsModel');
 const mongoose = require('mongoose');
-const { processMultiLevelCommissions } = require('../services/referralService'); // <-- IMPORTAMOS EL NUEVO SERVICIO
+const { processMultiLevelCommissions } = require('../services/referralService');
+const { ethers } = require('ethers'); // <-- 1. IMPORTAMOS ETHERS
+
+// ... (purchaseFactory, claimProduction, requestWithdrawal no tienen cambios) ...
 
 /**
  * @desc    El usuario compra una fábrica.
@@ -39,21 +42,13 @@ const purchaseFactory = asyncHandler(async (req, res) => {
             throw new Error('Saldo insuficiente para comprar esta fábrica.');
         }
 
-        // --- INICIO DE LÓGICA DE DISPARO DE COMISIÓN ---
-        // 1. Verificamos si esta compra debe generar comisiones.
         const shouldTriggerCommission = !factory.isFree && !user.hasTriggeredReferralCommission;
 
         if (shouldTriggerCommission) {
-            // Llamamos al servicio especializado para que maneje el pago.
-            // Le pasamos el comprador y la sesión de la transacción.
             await processMultiLevelCommissions(user, session);
-
-            // 2. Marcamos al usuario para que no vuelva a generar comisiones.
             user.hasTriggeredReferralCommission = true;
         }
-        // --- FIN DE LÓGICA DE DISPARO DE COMISIÓN ---
 
-        // Procedemos con la lógica de compra normal
         const purchaseDate = new Date();
         const expiryDate = new Date(purchaseDate);
         expiryDate.setDate(expiryDate.getDate() + factory.durationDays);
@@ -93,12 +88,8 @@ const purchaseFactory = asyncHandler(async (req, res) => {
 });
 
 
-/**
- * @desc    El usuario reclama la producción de una fábrica.
- * @route   POST /api/wallet/claim-production
- * @access  Private
- */
 const claimProduction = asyncHandler(async (req, res) => {
+    // ... Sin cambios ...
     const { purchasedFactoryId } = req.body;
     const userId = req.user.id;
     const user = await User.findById(userId).populate('purchasedFactories.factory');
@@ -117,12 +108,8 @@ const claimProduction = asyncHandler(async (req, res) => {
 });
 
 
-/**
- * @desc    El usuario solicita un retiro de fondos.
- * @route   POST /api/wallet/request-withdrawal
- * @access  Private
- */
 const requestWithdrawal = asyncHandler(async (req, res) => {
+    // ... Sin cambios ...
     const { amount, withdrawalAddress, withdrawalPassword } = req.body;
     const userId = req.user.id;
     const settings = await Settings.getSettings();
@@ -147,32 +134,63 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
     res.status(201).json({ message: 'Su solicitud de retiro ha sido enviada y está pendiente de aprobación.', newBalance: user.balance.usdt });
 });
 
-
+// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
 /**
- * @desc    Crea o recupera la dirección de depósito de un usuario.
- * @route   GET /api/wallet/create-deposit-address
+ * @desc    Crea o recupera la dirección de depósito única de un usuario. IDEMPOTENTE y SEGURO.
+ * @route   POST /api/wallet/create-deposit-address
  * @access  Private
  */
 const createDepositAddress = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id).select('telegramId');
-    if (!user) { res.status(404); throw new Error('Usuario no encontrado'); }
-    const depositAddress = `0x...placeholderAddressForUser...${user.telegramId}`;
-    res.json({ address: depositAddress });
+    const user = await User.findById(req.user.id).select('_id depositAddress');
+    if (!user) {
+        res.status(404);
+        throw new Error('Usuario no encontrado');
+    }
+
+    // 2. Verificación de Idempotencia: Si ya tiene una dirección, la devolvemos inmediatamente.
+    if (user.depositAddress) {
+        console.log(`[Depósito] Dirección recuperada para usuario ${user._id}: ${user.depositAddress}`);
+        return res.json({
+            paymentAddress: user.depositAddress,
+            currency: 'USDT',
+            network: 'BSC (BEP20)'
+        });
+    }
+
+    // 3. Generación Segura (Solo se ejecuta una vez por usuario)
+    console.log(`[Depósito] Generando nueva dirección para usuario ${user._id}...`);
+    const masterNode = ethers.HDNodeWallet.fromPhrase(process.env.MASTER_SEED_PHRASE);
+    
+    // Convertimos el _id del usuario en un índice numérico único para la derivación.
+    // Tomamos los últimos 6 caracteres del ID hexadecimal y los convertimos a un número.
+    const userIndex = parseInt(user._id.toString().slice(-6), 16);
+    
+    const derivationPath = `m/44'/60'/0'/0/${userIndex}`;
+    const derivedWallet = masterNode.derivePath(derivationPath);
+    const newDepositAddress = derivedWallet.address;
+
+    // 4. Persistencia: Guardamos la dirección en la base de datos para futuras consultas.
+    user.depositAddress = newDepositAddress;
+    await user.save();
+    
+    console.log(`[Depósito] ✅ Dirección generada y guardada para usuario ${user._id}: ${newDepositAddress}`);
+
+    // 5. Respuesta Correcta: Enviamos el objeto con la estructura que el frontend espera.
+    res.status(201).json({
+        paymentAddress: newDepositAddress,
+        currency: 'USDT',
+        network: 'BSC (BEP20)'
+    });
 });
+// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
 
-
-/**
- * @desc    Obtiene el historial de transacciones del usuario.
- * @route   GET /api/wallet/history
- * @access  Private
- */
 const getHistory = asyncHandler(async (req, res) => {
+    // ... Sin cambios ...
     const user = await User.findById(req.user.id).select('transactions');
     if (!user) { res.status(404); throw new Error('Usuario no encontrado'); }
     const sortedTransactions = user.transactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     res.json(sortedTransactions);
 });
-
 
 module.exports = {
     purchaseFactory,

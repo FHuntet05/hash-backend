@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v1.7 - VERSIÓN FINAL ONBOARDING)
+// RUTA: backend/index.js (v1.8 - CORRECCIÓN CORS Y ESTABILIZACIÓN)
 
 const express = require('express');
 const cors = require('cors');
@@ -57,9 +57,18 @@ const corsOptions = {
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
     credentials: true,
 };
+
+// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
+// 1. Manejador de Preflight: Se añade esta línea para responder explícitamente a las peticiones OPTIONS.
+// Esto desbloquea las peticiones complejas (como las de TeamPage) que envían credenciales.
+app.options('*', cors(corsOptions));
+// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
+
 app.use(cors(corsOptions));
 app.use(express.json());
+
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
 app.use('/api/auth', authRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);

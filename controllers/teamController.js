@@ -1,4 +1,4 @@
-// backend/controllers/teamController.js (v23.1 - LÓGICA DE CÁLCULO EN JS ROBUSTA)
+// RUTA: backend/controllers/teamController.js (v23.2 - AUDITORÍA Y VALIDACIÓN FINAL)
 
 const User = require('../models/userModel');
 const mongoose = require('mongoose');
@@ -7,10 +7,8 @@ const getTeamStats = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
 
-    // 1. Obtener el usuario con todos sus referidos y transacciones de una sola vez.
-    // Esta es la consulta correcta para su arquitectura de datos.
     const user = await User.findById(userId)
-      .select('referrals transactions') // Solo seleccionamos lo que necesitamos
+      .select('referrals transactions')
       .populate({
         path: 'referrals.user',
         select: 'referrals',
@@ -28,7 +26,6 @@ const getTeamStats = async (req, res) => {
       return res.status(404).json({ message: "Usuario no encontrado" });
     }
 
-    // 2. Contar los miembros del equipo por nivel
     const membersByLevel = { 1: 0, 2: 0, 3: 0 };
     (user.referrals || []).forEach(ref1 => {
       if (ref1.user) {
@@ -46,17 +43,14 @@ const getTeamStats = async (req, res) => {
       }
     });
 
-    // 3. Calcular las comisiones iterando sobre el array de transacciones del usuario
     const commissionsByLevel = { 1: 0, 2: 0, 3: 0 };
     let totalCommission = 0;
 
-    // Filtramos el array de transacciones que ya tenemos en el objeto 'user'
     const commissionTransactions = user.transactions.filter(
       tx => tx.type === 'referral_commission'
     );
 
     for (const tx of commissionTransactions) {
-      // Leemos los metadatos de cada transacción de comisión
       const level = tx.metadata?.commissionLevel;
       if (level && commissionsByLevel.hasOwnProperty(level)) {
         commissionsByLevel[level] += tx.amount;
@@ -64,7 +58,6 @@ const getTeamStats = async (req, res) => {
       }
     }
     
-    // 4. Construir el objeto de respuesta final
     const stats = {
       totalTeamMembers: membersByLevel[1] + membersByLevel[2] + membersByLevel[3],
       totalCommission: totalCommission,
@@ -74,6 +67,10 @@ const getTeamStats = async (req, res) => {
         { level: 3, totalMembers: membersByLevel[3], totalCommission: commissionsByLevel[3] },
       ],
     };
+
+    // --- LOG DE AUDITORÍA AÑADIDO ---
+    console.log(`[TeamStats] ✅ Datos generados para usuario ${userId}. Comisión Total: ${totalCommission}. Enviando respuesta...`.green);
+    // --- FIN DEL LOG AÑADIDO ---
 
     res.json(stats);
 
