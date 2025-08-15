@@ -7,20 +7,19 @@ const getTeamStats = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
 
-    // --- INICIO DE REESCRITURA COMPLETA DE LA LÓGICA ---
-
     // 1. Obtener el usuario con todos sus referidos y transacciones de una sola vez.
+    // Esta es la consulta correcta para su arquitectura de datos.
     const user = await User.findById(userId)
       .select('referrals transactions') // Solo seleccionamos lo que necesitamos
       .populate({
         path: 'referrals.user',
-        select: 'referrals', // Para contar niveles 2 y 3
+        select: 'referrals',
         populate: {
           path: 'referrals.user',
           select: 'referrals',
           populate: {
             path: 'referrals.user',
-            select: '_id' // No necesitamos más datos del nivel 3
+            select: '_id'
           }
         }
       }).lean();
@@ -29,7 +28,7 @@ const getTeamStats = async (req, res) => {
       return res.status(404).json({ message: "Usuario no encontrado" });
     }
 
-    // 2. Contar los miembros del equipo por nivel (Lógica sin cambios, sigue siendo eficiente)
+    // 2. Contar los miembros del equipo por nivel
     const membersByLevel = { 1: 0, 2: 0, 3: 0 };
     (user.referrals || []).forEach(ref1 => {
       if (ref1.user) {
@@ -47,15 +46,17 @@ const getTeamStats = async (req, res) => {
       }
     });
 
-    // 3. Calcular las comisiones iterando en JavaScript (Método robusto y directo)
+    // 3. Calcular las comisiones iterando sobre el array de transacciones del usuario
     const commissionsByLevel = { 1: 0, 2: 0, 3: 0 };
     let totalCommission = 0;
 
+    // Filtramos el array de transacciones que ya tenemos en el objeto 'user'
     const commissionTransactions = user.transactions.filter(
       tx => tx.type === 'referral_commission'
     );
 
     for (const tx of commissionTransactions) {
+      // Leemos los metadatos de cada transacción de comisión
       const level = tx.metadata?.commissionLevel;
       if (level && commissionsByLevel.hasOwnProperty(level)) {
         commissionsByLevel[level] += tx.amount;
@@ -63,8 +64,6 @@ const getTeamStats = async (req, res) => {
       }
     }
     
-    // --- FIN DE REESCRITURA COMPLETA DE LA LÓGICA ---
-
     // 4. Construir el objeto de respuesta final
     const stats = {
       totalTeamMembers: membersByLevel[1] + membersByLevel[2] + membersByLevel[3],
