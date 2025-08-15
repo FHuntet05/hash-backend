@@ -1,4 +1,4 @@
-// backend/controllers/teamController.js (v23.0 - LÓGICA DE ESTADÍSTICAS POR AGREGACIÓN)
+// backend/controllers/teamController.js (v23.1 - LÓGICA DE CÁLCULO EN JS ROBUSTA)
 
 const User = require('../models/userModel');
 const mongoose = require('mongoose');
@@ -7,28 +7,31 @@ const getTeamStats = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
 
-    // 1. Obtener la jerarquía completa de referidos del usuario
-    const userWithTeam = await User.findById(userId)
+    // --- INICIO DE REESCRITURA COMPLETA DE LA LÓGICA ---
+
+    // 1. Obtener el usuario con todos sus referidos y transacciones de una sola vez.
+    const user = await User.findById(userId)
+      .select('referrals transactions') // Solo seleccionamos lo que necesitamos
       .populate({
         path: 'referrals.user',
-        select: '_id referrals',
+        select: 'referrals', // Para contar niveles 2 y 3
         populate: {
           path: 'referrals.user',
-          select: '_id referrals',
+          select: 'referrals',
           populate: {
             path: 'referrals.user',
-            select: '_id'
+            select: '_id' // No necesitamos más datos del nivel 3
           }
         }
       }).lean();
 
-    if (!userWithTeam) {
+    if (!user) {
       return res.status(404).json({ message: "Usuario no encontrado" });
     }
 
-    // 2. Aplanar la estructura de referidos y contar miembros por nivel
+    // 2. Contar los miembros del equipo por nivel (Lógica sin cambios, sigue siendo eficiente)
     const membersByLevel = { 1: 0, 2: 0, 3: 0 };
-    (userWithTeam.referrals || []).forEach(ref1 => {
+    (user.referrals || []).forEach(ref1 => {
       if (ref1.user) {
         membersByLevel[1]++;
         (ref1.user.referrals || []).forEach(ref2 => {
@@ -44,39 +47,25 @@ const getTeamStats = async (req, res) => {
       }
     });
 
-    // --- INICIO DE LÓGICA DE CÁLCULO DE COMISIONES POR AGREGACIÓN ---
-    // 3. Usamos el framework de agregación de MongoDB para un cálculo eficiente.
-    const commissionStats = await User.aggregate([
-      // Paso A: Encontrar al usuario actual
-      { $match: { _id: userId } },
-      
-      // Paso B: "Desenredar" el array de transacciones para procesar cada una individualmente
-      { $unwind: '$transactions' },
-      
-      // Paso C: Filtrar solo las transacciones que son de comisiones de referido
-      { $match: { 'transactions.type': 'referral_commission' } },
-      
-      // Paso D: Agrupar por nivel de comisión y sumar los montos
-      {
-        $group: {
-          _id: '$transactions.metadata.commissionLevel', // Agrupar por Nivel 1, 2, o 3
-          totalAmount: { $sum: '$transactions.amount' }   // Sumar el monto de cada comisión
-        }
-      }
-    ]);
-
-    // 4. Formatear los resultados de la agregación en un objeto fácil de usar
+    // 3. Calcular las comisiones iterando en JavaScript (Método robusto y directo)
     const commissionsByLevel = { 1: 0, 2: 0, 3: 0 };
     let totalCommission = 0;
-    commissionStats.forEach(stat => {
-      if (stat._id) { // stat._id contendrá el nivel (1, 2, 3)
-        commissionsByLevel[stat._id] = stat.totalAmount;
-        totalCommission += stat.totalAmount;
-      }
-    });
-    // --- FIN DE LÓGICA DE CÁLCULO DE COMISIONES POR AGREGACIÓN ---
 
-    // 5. Construir el objeto de respuesta final
+    const commissionTransactions = user.transactions.filter(
+      tx => tx.type === 'referral_commission'
+    );
+
+    for (const tx of commissionTransactions) {
+      const level = tx.metadata?.commissionLevel;
+      if (level && commissionsByLevel.hasOwnProperty(level)) {
+        commissionsByLevel[level] += tx.amount;
+        totalCommission += tx.amount;
+      }
+    }
+    
+    // --- FIN DE REESCRITURA COMPLETA DE LA LÓGICA ---
+
+    // 4. Construir el objeto de respuesta final
     const stats = {
       totalTeamMembers: membersByLevel[1] + membersByLevel[2] + membersByLevel[3],
       totalCommission: totalCommission,
@@ -95,7 +84,6 @@ const getTeamStats = async (req, res) => {
   }
 };
 
-// Se mantiene la función getLevelDetails sin cambios, ya que su propósito es diferente.
 const getLevelDetails = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
