@@ -1,4 +1,4 @@
-// RUTA: backend/middleware/authMiddleware.js (v18.1 - BANEO REFORZADO)
+// RUTA: backend/middleware/authMiddleware.js (v18.2 - SINCRONIZADO CON MODELO)
 
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
@@ -10,34 +10,30 @@ const protect = asyncHandler(async (req, res, next) => {
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     try {
       token = req.headers.authorization.split(' ')[1];
-
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      req.user = await User.findById(decoded.id).select('-password'); 
+      // Obtenemos el usuario y sus campos clave para la validación.
+      req.user = await User.findById(decoded.id).select('-password -transactions'); 
 
       if (!req.user) {
           res.status(401);
           throw new Error('No autorizado, el usuario del token ya no existe.');
       }
 
-      // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA: BARRERA FINAL DE BANEO ---
-      // Esta es la barrera final para CADA petición a la API. Si un usuario es baneado
-      // mientras tiene una sesión activa, será expulsado en su siguiente acción.
-      if (req.user.status === 'banned') {
-          res.status(403); // 403 Forbidden: Autenticado pero no tiene permiso.
-          throw new Error('Acceso denegado: tu cuenta ha sido suspendida.');
+      // La barrera de seguridad ahora es simple y robusta.
+      // Si el status no es 'active', se deniega el acceso.
+      if (req.user.status !== 'active') {
+          res.status(403); // 403 Forbidden
+          throw new Error(`Acceso denegado. Estado de la cuenta: ${req.user.status}.`);
       }
-      // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA ---
       
       next();
 
     } catch (error) {
-      // Devolvemos el status code que hayamos seteado (401 o 403)
       const statusCode = res.statusCode !== 200 ? res.statusCode : 401;
-      // Y un mensaje claro.
       const message = error.message || 'No autorizado, token fallido.';
       res.status(statusCode).json({ message });
-      return; // Detenemos la ejecución
+      return;
     }
   }
 

@@ -1,4 +1,4 @@
-// RUTA: backend/models/userModel.js (v4.1 - SOPORTE PARA TAREAS REINICIABLES)
+// RUTA: backend/models/userModel.js (v4.2 - CAMPO STATUS Y BANEO INTEGRADO)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -15,6 +15,19 @@ const userSchema = new mongoose.Schema({
     username: { type: String, unique: true, sparse: true },
     fullName: { type: String },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
+    
+    // --- INICIO DE CORRECCIÓN: AÑADIR CAMPOS STATUS Y ISBANNED ---
+    status: {
+        type: String,
+        enum: ['active', 'banned', 'pending_verification'],
+        default: 'active' // Todos los usuarios nuevos son 'active' por defecto.
+    },
+    isBanned: { // Campo redundante pero mantenido por compatibilidad con su adminController
+        type: Boolean,
+        default: false
+    },
+    // --- FIN DE CORRECCIÓN ---
+
     password: { type: String, select: false },
     passwordResetRequired: { type: Boolean, default: false },
     balance: {
@@ -38,17 +51,14 @@ const userSchema = new mongoose.Schema({
         level: { type: Number, required: true, enum: [1, 2, 3] }
     }],
     
-    // --- INICIO DE MODIFICACIÓN PARA TAREAS ---
     claimedTasks: {
         type: Map,
         of: new mongoose.Schema({
             claimed: { type: Boolean, default: true },
-            // Guardamos el conteo de referidos al momento de reclamar
             referralCountAtClaim: { type: Number } 
         }, { _id: false }),
         default: {}
     },
-    // --- FIN DE MODIFICACIÓN ---
 
     telegramVisited: {
         type: Boolean,
@@ -71,7 +81,6 @@ const userSchema = new mongoose.Schema({
     
 }, { timestamps: true });
 
-
 // --- MIDDLEWARE Y MÉTODOS (sin cambios) ---
 userSchema.pre('save', async function(next) {
     if (this.isModified('password') && this.password) {
@@ -81,6 +90,10 @@ userSchema.pre('save', async function(next) {
     if (this.isModified('withdrawalPassword') && this.withdrawalPassword) {
         const salt = await bcrypt.genSalt(10);
         this.withdrawalPassword = await bcrypt.hash(this.withdrawalPassword, salt);
+    }
+    // Sincroniza isBanned con status para consistencia
+    if (this.isModified('status')) {
+        this.isBanned = this.status === 'banned';
     }
     next();
 });

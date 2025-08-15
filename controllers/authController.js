@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/authController.js (v6.1 - LÓGICA DE BANEO REFORZADA)
+// RUTA: backend/controllers/authController.js (v6.2 - SINCRONIZADO CON MODELO)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
@@ -24,7 +24,7 @@ const syncUser = async (req, res) => {
     const telegramId = telegramUser.id.toString();
 
     try {
-        const settings = await Setting.findOne({ singleton: 'global_settings' }) || await Setting.create({ singleton: 'global_settings' });
+        const settings = await Setting.getSettings(); // Usando el método estático robusto
         if (settings.maintenanceMode) {
             return res.status(503).json({ 
                 inMaintenance: true, 
@@ -34,11 +34,11 @@ const syncUser = async (req, res) => {
 
         let user = await User.findOne({ telegramId });
 
-        // --- INICIO DE CORRECCIÓN DE SEGURIDAD CRÍTICA: VALIDACIÓN DE BANEO EN EL ACCESO ---
+        // --- LÓGICA DE VALIDACIÓN DE ACCESO ---
+        // Ahora que el modelo tiene el campo 'status' con valor 'active' por defecto, esta lógica es segura.
         if (user && user.status === 'banned') {
             return res.status(403).json({ message: 'Tu cuenta ha sido suspendida. Contacta a soporte.' });
         }
-        // --- FIN DE CORRECCIÓN DE SEGURIDAD CRÍTICA ---
 
         let photoFileId = null;
         try {
@@ -54,7 +54,7 @@ const syncUser = async (req, res) => {
         }
 
         if (!user) {
-            console.warn(`[Auth Sync] Usuario no encontrado en sync, creando desde cero (caso de borde)...`.yellow);
+            console.warn(`[Auth Sync] Usuario no encontrado en sync, creando desde cero...`.yellow);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
             const initialFactories = [];
@@ -65,15 +65,16 @@ const syncUser = async (req, res) => {
                 expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
                 initialFactories.push({ factory: freeFactory._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
             }
+            // El nuevo usuario se creará con 'status: active' gracias al 'default' en el modelo.
             user = new User({ telegramId, username, fullName, language: telegramUser.language_code || 'es', photoFileId, purchasedFactories: initialFactories });
             
         } else {
+            // Lógica para asignar fábrica gratuita si un usuario antiguo no la tiene
             if (!user.purchasedFactories || user.purchasedFactories.length === 0) {
                 const freeFactory = await Factory.findOne({ isFree: true }).lean();
                 if (freeFactory) {
-                    console.log(`[Auth Sync] Usuario existente ${user.username} no tenía fábricas. Asignando la gratuita...`.yellow);
                     const purchaseDate = new Date();
-                    const expiryDate = new Date(purchaseDate);
+                    const expiryDate = new Date();
                     expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
                     user.purchasedFactories.push({
                         factory: freeFactory._id,
@@ -85,6 +86,7 @@ const syncUser = async (req, res) => {
             }
         }
 
+        // Actualización de datos del perfil
         user.username = telegramUser.username || user.username;
         user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
         if (photoFileId) user.photoFileId = photoFileId;
@@ -111,7 +113,7 @@ const getUserProfile = async (req, res) => {
     try {
         const user = await User.findById(req.user.id).populate('purchasedFactories.factory').populate('referredBy', 'username fullName');
         if (!user) { return res.status(404).json({ message: 'Usuario no encontrado' }); }
-        const settings = await Setting.findOne({ singleton: 'global_settings' });
+        const settings = await Setting.getSettings();
         res.json({ user: user.toObject(), settings: settings || {} });
     } catch (error) { res.status(500).json({ message: 'Error del servidor' }); }
 };
