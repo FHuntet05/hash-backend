@@ -1,13 +1,13 @@
-// RUTA: backend/src/routes/walletRoutes.js (VERSIÓN DEFINITIVA MEGA FÁBRICA)
+// RUTA: backend/routes/walletRoutes.js (SINCRONIZADO Y CORREGIDO)
 
 const express = require('express');
 const router = express.Router();
 
-// Importamos las funciones saneadas y el middleware de protección
+// Importamos las funciones con los nombres correctos desde el controlador actualizado
 const { 
     createDepositAddress,
-    purchaseFactoryWithBalance,
-    claimFactoryProduction,
+    purchaseFactory, // <-- CORREGIDO: Nombre cambiado
+    claimProduction, // <-- CORREGIDO: Nombre cambiado
     requestWithdrawal,
     getHistory 
 } = require('../controllers/walletController');
@@ -22,11 +22,11 @@ router.post('/create-deposit-address', protect, createDepositAddress);
 
 // POST /api/wallet/purchase-factory
 // Permite al usuario comprar una fábrica usando su saldo interno.
-router.post('/purchase-factory', protect, purchaseFactoryWithBalance);
+router.post('/purchase-factory', protect, purchaseFactory); // <-- CORREGIDO: Se usa la función correcta
 
 // POST /api/wallet/claim-production
 // Permite al usuario reclamar la producción de una fábrica específica.
-router.post('/claim-production', protect, claimFactoryProduction);
+router.post('/claim-production', protect, claimProduction); // <-- CORREGIDO: Se usa la función correcta
 
 // POST /api/wallet/request-withdrawal
 // Inicia una solicitud de retiro de fondos.
