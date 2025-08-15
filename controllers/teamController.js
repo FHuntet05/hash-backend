@@ -1,4 +1,4 @@
-// backend/controllers/teamController.js (v22.0 - LÓGICA DE ESTADÍSTICAS RECONSTRUIDA)
+// backend/controllers/teamController.js (v22.1 - CORRECCIÓN DE CONTEO DE MIEMBROS)
 
 const User = require('../models/userModel');
 const Transaction = require('../models/transactionModel');
@@ -9,9 +9,12 @@ const getTeamStats = async (req, res) => {
     const userId = new mongoose.Types.ObjectId(req.user.id);
 
     // 1. Obtener la jerarquía completa de referidos del usuario
+    // --- INICIO DE CORRECCIÓN ---
+    // Se elimina .select('referrals') para permitir que populate funcione correctamente
+    // en todos los niveles y traiga toda la data necesaria.
     const userWithTeam = await User.findById(userId)
-        .select('referrals')
         .populate({
+    // --- FIN DE CORRECCIÓN ---
             path: 'referrals.user',
             select: '_id username referrals', // Seleccionar solo lo necesario
             populate: {
@@ -28,7 +31,7 @@ const getTeamStats = async (req, res) => {
         return res.status(404).json({ message: "Usuario no encontrado" });
     }
 
-    // 2. Organizar a los miembros y sus IDs por nivel
+    // 2. Organizar a los miembros y sus IDs por nivel (Lógica sin cambios)
     const teamMembersByLevel = { 1: [], 2: [], 3: [] };
     const allTeamMemberIds = [];
 
@@ -51,13 +54,14 @@ const getTeamStats = async (req, res) => {
     });
 
     // 3. Obtener todas las comisiones generadas por el equipo de una sola vez
+    // NOTA: Esta lógica asume un modelo 'Transaction' separado.
     const commissionTransactions = await Transaction.find({
         user: userId, // Comisiones pagadas A MI
         type: 'commission',
         'metadata.buyerId': { $in: allTeamMemberIds } // generadas POR alguien de mi equipo
     }).select('amount metadata.buyerId').lean();
 
-    // 4. Procesar los datos para calcular las comisiones por nivel
+    // 4. Procesar los datos para calcular las comisiones por nivel (Lógica sin cambios)
     const commissionsByLevel = { 1: 0, 2: 0, 3: 0 };
     const memberIdsLevel1 = new Set(teamMembersByLevel[1].map(u => u._id.toString()));
     const memberIdsLevel2 = new Set(teamMembersByLevel[2].map(u => u._id.toString()));
@@ -78,9 +82,6 @@ const getTeamStats = async (req, res) => {
     const stats = {
         totalTeamMembers: allTeamMemberIds.length,
         totalCommission: commissionTransactions.reduce((sum, tx) => sum + tx.amount, 0),
-        // Los campos totalTeamRecharge y totalTeamWithdrawals se eliminan por ser
-        // computacionalmente caros y de bajo valor informativo en la vista principal.
-        // Se pueden reintroducir en un reporte más detallado si es necesario.
         levels: [
             { level: 1, totalMembers: teamMembersByLevel[1].length, totalCommission: commissionsByLevel[1] },
             { level: 2, totalMembers: teamMembersByLevel[2].length, totalCommission: commissionsByLevel[2] },
@@ -96,9 +97,6 @@ const getTeamStats = async (req, res) => {
   }
 };
 
-
-// La función getLevelDetails está desactualizada (usa 'miningRate') pero la dejaremos por ahora
-// ya que el frontend podría usarla para mostrar la lista de miembros. Se puede refactorizar más tarde.
 const getLevelDetails = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
@@ -151,7 +149,7 @@ const getLevelDetails = async (req, res) => {
       .filter(Boolean)
       .map(member => ({
         username: member.username,
-        photoUrl: member.photoUrl, // Este campo necesita ser populado con getTemporaryPhotoUrl
+        photoUrl: member.photoUrl,
         score: parseFloat((member.balance?.usdt || 0).toFixed(2))
       }));
 
