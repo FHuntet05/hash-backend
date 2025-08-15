@@ -1,16 +1,19 @@
-// RUTA: backend/routes/walletRoutes.js (SINCRONIZADO Y CORREGIDO)
+// RUTA: backend/routes/walletRoutes.js (v1.1 - SINCRONIZADO Y ESTABLE)
 
 const express = require('express');
 const router = express.Router();
 
-// Importamos las funciones con los nombres correctos desde el controlador actualizado
+// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
+// Se importan las funciones con los nombres EXACTOS que se exportan desde walletController.js
 const { 
     createDepositAddress,
-    purchaseFactory, // <-- CORREGIDO: Nombre cambiado
-    claimProduction, // <-- CORREGIDO: Nombre cambiado
+    purchaseFactoryWithBalance, // <-- CORREGIDO
+    claimFactoryProduction,   // <-- CORREGIDO
     requestWithdrawal,
     getHistory 
 } = require('../controllers/walletController');
+// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
+
 const { protect } = require('../middleware/authMiddleware');
 
 // === RUTAS PARA EL SISTEMA "MEGA FÁBRICA" ===
@@ -22,11 +25,15 @@ router.post('/create-deposit-address', protect, createDepositAddress);
 
 // POST /api/wallet/purchase-factory
 // Permite al usuario comprar una fábrica usando su saldo interno.
-router.post('/purchase-factory', protect, purchaseFactory); // <-- CORREGIDO: Se usa la función correcta
+// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
+router.post('/purchase-factory', protect, purchaseFactoryWithBalance); // <-- CORREGIDO
+// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
 
 // POST /api/wallet/claim-production
 // Permite al usuario reclamar la producción de una fábrica específica.
-router.post('/claim-production', protect, claimProduction); // <-- CORREGIDO: Se usa la función correcta
+// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
+router.post('/claim-production', protect, claimFactoryProduction); // <-- CORREGIDO
+// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
 
 // POST /api/wallet/request-withdrawal
 // Inicia una solicitud de retiro de fondos.
