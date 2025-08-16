@@ -1,13 +1,16 @@
-// RUTA: backend/models/userModel.js (v4.7 - CAMPO 'totalRecharge' AÑADIDO)
+// RUTA: backend/models/userModel.js (v4.8 - ESQUEMA DE TRANSACCIÓN CORREGIDO)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const transactionSchema = new mongoose.Schema({
-    type: { type: String, enum: ['deposit', 'withdrawal', 'purchase', 'referral_commission', 'task_reward', 'production_claim'], required: true },
+    type: { type: String, enum: ['deposit', 'withdrawal', 'purchase', 'referral_commission', 'task_reward', 'production_claim', 'admin_credit', 'admin_debit'], required: true },
     amount: { type: Number, required: true },
     currency: { type: String, required: true, default: 'USDT' },
     description: { type: String, required: true },
-    status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'completed' },
+    // --- INICIO DE LA CORRECCIÓN ---
+    // Se añade 'rejected' a la lista de estados válidos para permitir que el administrador rechace retiros.
+    status: { type: String, enum: ['pending', 'completed', 'failed', 'rejected'], default: 'completed' },
+    // --- FIN DE LA CORRECCIÓN ---
     metadata: { type: mongoose.Schema.Types.Mixed }
 }, { timestamps: true });
 
@@ -22,12 +25,7 @@ const userSchema = new mongoose.Schema({
     password: { type: String, select: false },
     passwordResetRequired: { type: Boolean, default: false },
     balance: { usdt: { type: Number, default: 0 } },
-
-    // --- INICIO DE LA MODIFICACIÓN ---
-    // Se añade el campo para rastrear el total de depósitos del usuario.
     totalRecharge: { type: Number, default: 0 },
-    // --- FIN DE LA MODIFICACIÓN ---
-
     purchasedFactories: [{
         factory: { type: mongoose.Schema.Types.ObjectId, ref: 'Factory', required: true },
         purchaseDate: { type: Date, required: true },
