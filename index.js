@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v1.8 - CORRECCIÓN CORS Y ESTABILIZACIÓN)
+// RUTA: backend/index.js (v1.9 - CORS ROBUSTO Y ESTABILIZADO)
 
 const express = require('express');
 const cors = require('cors');
@@ -28,6 +28,7 @@ function checkEnvVariables() {
 checkEnvVariables();
 connectDB();
 
+// --- [Importaciones de rutas sin cambios] ---
 const authRoutes = require('./routes/authRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
@@ -44,13 +45,22 @@ const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 app.disable('etag');
-const whitelist = [process.env.FRONTEND_URL];
+
+// --- INICIO DE LA MODIFICACIÓN DE CORS ---
+// Se crea una whitelist más robusta que incluye la URL de producción y URLs de desarrollo local.
+const allowedOrigins = [
+    process.env.FRONTEND_URL, // Su URL de producción desde .env
+    'http://localhost:3000',  // Para desarrollo con Create React App
+    'http://localhost:5173'   // Para desarrollo con Vite
+];
+
 const corsOptions = {
     origin: (origin, callback) => {
-        if (!origin || whitelist.indexOf(origin) !== -1) {
+        // Permitir solicitudes si el origen está en la lista o si no hay origen (ej: Postman)
+        if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            console.error(`[CORS] ❌ Origen RECHAZADO: '${origin}'. No está en la whitelist: [${whitelist.join(', ')}]`.red.bold);
+            console.error(`[CORS] ❌ Origen RECHAZADO: '${origin}'. No está en la whitelist.`.red.bold);
             callback(new Error(`Origen no permitido por CORS: ${origin}`));
         }
     },
@@ -58,17 +68,16 @@ const corsOptions = {
     credentials: true,
 };
 
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
-// 1. Manejador de Preflight: Se añade esta línea para responder explícitamente a las peticiones OPTIONS.
-// Esto desbloquea las peticiones complejas (como las de TeamPage) que envían credenciales.
-app.options('*', cors(corsOptions));
-// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
-
+// Se aplica la configuración de CORS a TODAS las solicitudes, incluyendo las de preflight (OPTIONS).
+console.log(`[SISTEMA] Configurando CORS para permitir orígenes: ${allowedOrigins.join(', ')}`.cyan);
 app.use(cors(corsOptions));
+// --- FIN DE LA MODIFICACIÓN DE CORS ---
+
 app.use(express.json());
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
+// --- [Rutas sin cambios] ---
 app.use('/api/auth', authRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);
@@ -80,6 +89,7 @@ app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/factories', factoryRoutes);
 
+// --- [Lógica del Bot de Telegram (sin cambios)] ---
 const WELCOME_MESSAGE = `
 🤖 ¡Bienvenido a Mega Fábrica!\n\n
 🏭 Tu centro de operaciones para la producción digital. Conecta, construye y genera ingresos pasivos en USDT.\n
@@ -177,6 +187,8 @@ bot.command('start', async (ctx) => {
         await ctx.reply('Lo sentimos, ha ocurrido un error al procesar tu solicitud.');
     }
 });
+// --- [Fin de la lógica del Bot] ---
+
 
 bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
