@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/walletController.js (v3.2 - UNIFICADO, ESTABLE Y CORREGIDO)
+// RUTA: backend/controllers/walletController.js (v3.3 - NOTIFICACIÓN DE BLOQUEO UNIFICADA)
 
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
@@ -54,6 +54,7 @@ const purchaseFactoryWithBalance = async (req, res) => {
 
         user.balance.usdt -= totalCost;
         
+        // Si el usuario estaba forzado a comprar, esta compra levanta la restricción.
         if (user.mustPurchaseToWithdraw) {
             user.mustPurchaseToWithdraw = false;
         }
@@ -145,27 +146,39 @@ const requestWithdrawal = async (req, res) => {
   try {
     session.startTransaction();
 
-    const settings = await Setting.findOne({ singleton: 'global_settings' }).session(session);
+    const settings = await Setting.findOne({ _id: 'global_settings' }).session(session); // Usar _id para mayor precisión
     if (!settings) {
         throw new Error('La configuración del sistema no está disponible.');
     }
     
-    const user = await User.findById(userId).select('+withdrawalPassword +isWithdrawalPasswordSet').populate('purchasedFactories.factory').session(session);
+    // Se popula 'factory' para poder acceder a 'isFree'
+    const user = await User.findById(userId)
+        .select('+withdrawalPassword +isWithdrawalPasswordSet')
+        .populate('purchasedFactories.factory')
+        .session(session);
+
     if (!user) {
         throw new Error('Usuario no encontrado.');
     }
 
+    // --- INICIO DE LA SECCIÓN MODIFICADA ---
+    const hasPurchasedNonFreeFactory = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
+    const unifiedErrorMessage = 'Debes comprar una fábrica para poder activar o reactivar los retiros.';
+
+    // Chequeo 1: Bloqueo Global
+    if (settings.forcePurchaseOnAllWithdrawals && !hasPurchasedNonFreeFactory) {
+      return res.status(403).json({ message: unifiedErrorMessage });
+    }
+
+    // Chequeo 2: Bloqueo Individual
+    // Se cambió el mensaje para ser idéntico al global, creando una experiencia unificada.
+    if (user.mustPurchaseToWithdraw && !hasPurchasedNonFreeFactory) {
+      return res.status(403).json({ message: unifiedErrorMessage });
+    }
+    // --- FIN DE LA SECCIÓN MODIFICADA ---
+
     if (!settings.withdrawalsEnabled) {
       return res.status(403).json({ message: 'Los retiros están deshabilitados temporalmente por mantenimiento.' });
-    }
-
-    const hasPurchasedNonFreeFactory = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
-    if (settings.forcePurchaseOnAllWithdrawals && !hasPurchasedNonFreeFactory) {
-      return res.status(403).json({ message: 'Debes comprar al menos una fábrica para poder activar los retiros.' });
-    }
-
-    if (user.mustPurchaseToWithdraw && !hasPurchasedNonFreeFactory) {
-      return res.status(403).json({ message: 'Debes comprar otra fábrica para poder retirar.' });
     }
 
     if (!user.isWithdrawalPasswordSet) {
@@ -183,8 +196,9 @@ const requestWithdrawal = async (req, res) => {
     if (isNaN(numericAmount) || numericAmount <= 0) {
         return res.status(400).json({ message: 'El monto del retiro no es válido.' });
     }
-    if (numericAmount < settings.minimumWithdrawal) {
-        return res.status(400).json({ message: `El retiro mínimo es ${settings.minimumWithdrawal} USDT.` });
+    // Corregido: 'minimumWithdrawal' a 'minWithdrawal' para coincidir con el modelo.
+    if (numericAmount < settings.minWithdrawal) {
+        return res.status(400).json({ message: `El retiro mínimo es ${settings.minWithdrawal} USDT.` });
     }
     if (!ethers.utils.isAddress(walletAddress)) {
         return res.status(400).json({ message: 'La dirección de billetera no es válida.' });
