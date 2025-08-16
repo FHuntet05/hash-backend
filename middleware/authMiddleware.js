@@ -1,4 +1,4 @@
-// RUTA: backend/middleware/authMiddleware.js (v18.2 - SINCRONIZADO CON MODELO)
+// RUTA: backend/middleware/authMiddleware.js (v18.3 - CORRECCIÓN SUPER ADMIN)
 
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
@@ -51,17 +51,21 @@ const isAdmin = (req, res, next) => {
     }
 };
 
+// --- INICIO DE LA CORRECCIÓN ---
 const isSuperAdmin = (req, res, next) => {
-    if (!process.env.ADMIN_TELEGRAM_ID) {
-        console.error('CRITICAL SECURITY ALERT: ADMIN_TELEGRAM_ID is not set.'.red.bold);
+    // CORREGIDO: Se utiliza la variable de entorno semánticamente correcta 'SUPER_ADMIN_TELEGRAM_ID'.
+    if (!process.env.SUPER_ADMIN_TELEGRAM_ID) {
+        console.error('CRITICAL SECURITY ALERT: SUPER_ADMIN_TELEGRAM_ID is not set.'.red.bold);
         return res.status(500).json({ message: 'Error de configuración del servidor.' });
     }
-    if (req.user && req.user.telegramId === process.env.ADMIN_TELEGRAM_ID) {
+    // CORREGIDO: La comparación ahora se hace contra la variable correcta.
+    if (req.user && req.user.telegramId === process.env.SUPER_ADMIN_TELEGRAM_ID) {
         next();
     } else {
         res.status(403).json({ message: 'Acceso denegado. Se requieren permisos de Super Administrador.' });
     }
 };
+// --- FIN DE LA CORRECCIÓN ---
 
 module.exports = {
   protect,
