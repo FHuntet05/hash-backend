@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/authController.js (v6.2 - SINCRONIZADO CON MODELO)
+// RUTA: backend/controllers/authController.js (v6.4 - PAYLOAD DE LOGIN CORREGIDO)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
@@ -16,43 +16,21 @@ const generateToken = (id) => {
 
 const syncUser = async (req, res) => {
     const { telegramUser } = req.body;
-    
-    if (!telegramUser || !telegramUser.id) {
-        return res.status(400).json({ message: 'Datos de usuario de Telegram requeridos.' });
-    }
-    
+    if (!telegramUser || !telegramUser.id) { return res.status(400).json({ message: 'Datos de usuario de Telegram requeridos.' }); }
     const telegramId = telegramUser.id.toString();
-
     try {
-        const settings = await Setting.getSettings(); // Usando el método estático robusto
-        if (settings.maintenanceMode) {
-            return res.status(503).json({ 
-                inMaintenance: true, 
-                maintenanceMessage: settings.maintenanceMessage 
-            });
-        }
-
+        const settings = await Setting.getSettings();
+        if (settings.maintenanceMode) { return res.status(503).json({ inMaintenance: true, maintenanceMessage: settings.maintenanceMessage }); }
         let user = await User.findOne({ telegramId });
-
-        // --- LÓGICA DE VALIDACIÓN DE ACCESO ---
-        // Ahora que el modelo tiene el campo 'status' con valor 'active' por defecto, esta lógica es segura.
-        if (user && user.status === 'banned') {
-            return res.status(403).json({ message: 'Tu cuenta ha sido suspendida. Contacta a soporte.' });
-        }
-
+        if (user && user.status === 'banned') { return res.status(403).json({ message: 'Tu cuenta ha sido suspendida. Contacta a soporte.' }); }
         let photoFileId = null;
         try {
-            const profilePhotosResponse = await axios.get(`${TELEGRAM_API_URL}/getUserProfilePhotos`, {
-                params: { user_id: telegramId, limit: 1 }
-            });
+            const profilePhotosResponse = await axios.get(`${TELEGRAM_API_URL}/getUserProfilePhotos`, { params: { user_id: telegramId, limit: 1 } });
             if (profilePhotosResponse.data.ok && profilePhotosResponse.data.result.total_count > 0) {
                 const photos = profilePhotosResponse.data.result.photos[0];
                 photoFileId = photos[photos.length - 1].file_id;
             }
-        } catch (photoError) {
-            console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId}.`, photoError.message);
-        }
-
+        } catch (photoError) { console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId}.`, photoError.message); }
         if (!user) {
             console.warn(`[Auth Sync] Usuario no encontrado en sync, creando desde cero...`.yellow);
             const username = telegramUser.username || `user_${telegramId}`;
@@ -65,44 +43,26 @@ const syncUser = async (req, res) => {
                 expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
                 initialFactories.push({ factory: freeFactory._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
             }
-            // El nuevo usuario se creará con 'status: active' gracias al 'default' en el modelo.
             user = new User({ telegramId, username, fullName, language: telegramUser.language_code || 'es', photoFileId, purchasedFactories: initialFactories });
-            
         } else {
-            // Lógica para asignar fábrica gratuita si un usuario antiguo no la tiene
             if (!user.purchasedFactories || user.purchasedFactories.length === 0) {
                 const freeFactory = await Factory.findOne({ isFree: true }).lean();
                 if (freeFactory) {
-                    const purchaseDate = new Date();
-                    const expiryDate = new Date();
+                    const purchaseDate = new Date(); const expiryDate = new Date();
                     expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
-                    user.purchasedFactories.push({
-                        factory: freeFactory._id,
-                        purchaseDate,
-                        expiryDate,
-                        lastClaim: purchaseDate
-                    });
+                    user.purchasedFactories.push({ factory: freeFactory._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
                 }
             }
         }
-
-        // Actualización de datos del perfil
         user.username = telegramUser.username || user.username;
         user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
         if (photoFileId) user.photoFileId = photoFileId;
-        
         await user.save();
-        
-        const userForResponse = await User.findById(user._id)
-            .populate({ path: 'purchasedFactories.factory', model: 'Factory' })
-            .populate('referredBy', 'username fullName');
-        
+        const userForResponse = await User.findById(user._id).populate({ path: 'purchasedFactories.factory', model: 'Factory' }).populate('referredBy', 'username fullName');
         const userObject = userForResponse.toObject();
         userObject.photoUrl = await getTemporaryPhotoUrl(userObject.photoFileId) || PLACEHOLDER_AVATAR_URL;
         const token = generateToken(userForResponse._id);
-
         res.status(200).json({ token, user: userObject, settings });
-
     } catch (error) {
         console.error('[Auth Sync] ERROR FATAL:'.red.bold, error);
         return res.status(500).json({ message: 'Error interno del servidor.', details: error.message });
@@ -125,16 +85,24 @@ const loginAdmin = async (req, res) => {
         
         if (adminUser && adminUser.role === 'admin' && (await adminUser.matchPassword(password))) {
             const token = generateToken(adminUser._id);
+            
+            // --- INICIO DE LA CORRECCIÓN ---
+            // Se construye explícitamente el objeto 'admin' para la respuesta,
+            // garantizando que el campo 'telegramId' esté presente.
+            const adminPayload = {
+                _id: adminUser._id, 
+                username: adminUser.username,
+                telegramId: adminUser.telegramId, // ESTA LÍNEA CORRIGE EL BUG
+                role: adminUser.role,
+            };
+
             res.json({ 
                 token,
-                admin: {
-                    _id: adminUser._id, 
-                    username: adminUser.username,
-                    telegramId: adminUser.telegramId,
-                    role: adminUser.role,
-                },
+                admin: adminPayload, // Se envía el payload completo y correcto
                 passwordResetRequired: adminUser.passwordResetRequired || false,
             });
+            // --- FIN DE LA CORRECCIÓN ---
+
         } else {
             res.status(401).json({ message: 'Credenciales inválidas.' });
         }
@@ -146,7 +114,8 @@ const loginAdmin = async (req, res) => {
 
 const getAdminProfile = async (req, res) => {
     try {
-        const admin = await User.findById(req.user.id).select('username role telegramId');
+        // Se asegura que este endpoint también devuelva un objeto consistente y completo.
+        const admin = await User.findById(req.user.id).select('_id username role telegramId');
         if (!admin || admin.role !== 'admin') {
             return res.status(401).json({ message: 'No autorizado' });
         }
@@ -158,27 +127,18 @@ const getAdminProfile = async (req, res) => {
 
 const updateAdminPassword = async(req, res) => {
     const { newPassword } = req.body;
-    if (!newPassword || newPassword.length < 6) {
-        return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.'});
-    }
+    if (!newPassword || newPassword.length < 6) { return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.'}); }
     try {
         const admin = await User.findById(req.user.id).select('+password +passwordResetRequired');
-        if (!admin || !admin.passwordResetRequired) {
-            return res.status(403).json({ message: 'No se requiere o no se permite el cambio de contraseña.' });
-        }
+        if (!admin || !admin.passwordResetRequired) { return res.status(403).json({ message: 'No se requiere o no se permite el cambio de contraseña.' }); }
         admin.password = newPassword;
         admin.passwordResetRequired = false;
         await admin.save();
-
         const token = generateToken(admin._id);
+        const adminPayload = { _id: admin._id, username: admin.username, telegramId: admin.telegramId, role: admin.role, };
         res.json({
             token,
-            admin: {
-                _id: admin._id,
-                username: admin.username,
-                telegramId: admin.telegramId,
-                role: admin.role,
-            },
+            admin: adminPayload,
             message: 'Contraseña actualizada con éxito.'
         });
     } catch (error) {
