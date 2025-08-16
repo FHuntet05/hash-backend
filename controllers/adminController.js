@@ -155,7 +155,42 @@ const createFactory = asyncHandler(async (req, res) => { const newFactory = awai
 const updateFactory = asyncHandler(async (req, res) => { const factory = await Factory.findByIdAndUpdate(req.params.id, req.body, { new: true }); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); res.json(factory); });
 const deleteFactory = asyncHandler(async (req, res) => { const factory = await Factory.findById(req.params.id); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); await factory.deleteOne(); res.json({ message: 'Fábrica eliminada.' }); });
 const getSettings = asyncHandler(async (req, res) => { const settings = await Setting.getSettings(); res.json(settings); });
-const updateSettings = asyncHandler(async (req, res) => { const { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 } = req.body; const settingsToUpdate = { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 }; const updatedSettings = await Setting.findByIdAndUpdate( 'global_settings', settingsToUpdate, { new: true, upsert: true, runValidators: true } ); res.json(updatedSettings); });
+const updateSettings = asyncHandler(async (req, res) => {
+    // --- INICIO DE LA MODIFICACIÓN ---
+    // Se extrae 'forcePurchaseOnAllWithdrawals' del cuerpo de la solicitud
+    // para asegurar que se guarde en la base de datos.
+    const {
+        maintenanceMode,
+        withdrawalsEnabled,
+        minWithdrawal,
+        withdrawalFeePercent,
+        forcePurchaseOnAllWithdrawals, // <--- CAMPO AÑADIDO
+        commissionLevel1,
+        commissionLevel2,
+        commissionLevel3
+    } = req.body;
+
+    const settingsToUpdate = {
+        maintenanceMode,
+        withdrawalsEnabled,
+        minWithdrawal,
+        withdrawalFeePercent,
+        forcePurchaseOnAllWithdrawals, // <--- CAMPO AÑADIDO
+        commissionLevel1,
+        commissionLevel2,
+        commissionLevel3
+    };
+
+    // La lógica de actualización no cambia, solo se asegura
+    // de que el nuevo campo esté incluido en el objeto a guardar.
+    const updatedSettings = await Setting.findByIdAndUpdate(
+        'global_settings',
+        settingsToUpdate,
+        { new: true, upsert: true, runValidators: true }
+    );
+
+    res.json(updatedSettings);
+    });
 const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `MegaFabrica Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
 const verifyAndEnableTwoFactor = asyncHandler(async (req, res) => { const { token } = req.body; const user = await User.findById(req.user.id).select('+twoFactorSecret'); if (!user || !user.twoFactorSecret) return res.status(400).json({ message: 'No se ha generado un secreto 2FA.' }); const verified = speakeasy.totp.verify({ secret: user.twoFactorSecret, encoding: 'base32', token }); if (verified) { user.isTwoFactorEnabled = true; await user.save(); res.json({ message: '¡2FA habilitado!' }); } else { res.status(400).json({ message: 'Token inválido.' }); }});
 const getWalletBalance = asyncHandler(async (req, res) => { const { address, chain } = req.body; if (!address || !chain) { res.status(400); throw new Error('Se requiere address y chain'); } try { const balances = await _getBalancesForAddress(address, chain); res.json({ success: true, balances }); } catch (error) { res.status(500).json({ success: false, message: error.message }); }});

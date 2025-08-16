@@ -1,4 +1,4 @@
-// RUTA: backend/models/userModel.js (v4.6 - CORRECCIÓN DE METADATOS)
+// RUTA: backend/models/userModel.js (v4.7 - CAMPO 'totalRecharge' AÑADIDO)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -22,6 +22,12 @@ const userSchema = new mongoose.Schema({
     password: { type: String, select: false },
     passwordResetRequired: { type: Boolean, default: false },
     balance: { usdt: { type: Number, default: 0 } },
+
+    // --- INICIO DE LA MODIFICACIÓN ---
+    // Se añade el campo para rastrear el total de depósitos del usuario.
+    totalRecharge: { type: Number, default: 0 },
+    // --- FIN DE LA MODIFICACIÓN ---
+
     purchasedFactories: [{
         factory: { type: mongoose.Schema.Types.ObjectId, ref: 'Factory', required: true },
         purchaseDate: { type: Date, required: true },
