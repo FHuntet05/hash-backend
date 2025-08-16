@@ -1,4 +1,4 @@
-// RUTA: backend/controllers/adminController.js (v45.5 - REFACTORIZACIÓN DE ORIGEN DE DATOS)
+// RUTA: backend/controllers/adminController.js (v45.6 - ARQUITECTURA 100% UNIFICADA)
 
 const User = require('../models/userModel');
 const Factory = require('../models/factoryModel');
@@ -16,7 +16,6 @@ const { ethers } = require('ethers');
 const PendingTx = require('../models/pendingTxModel');
 const qrCodeToDataURLPromise = require('util').promisify(QRCode.toDataURL);
 
-// --- CÓDIGO DE UTILIDADES Y FUNCIONES AUXILIARES ---
 const PLACEHOLDER_AVATAR_URL = 'https://i.postimg.cc/mD21B6r7/user-avatar-placeholder.png';
 const USDT_BSC_ADDRESS = '0x55d398326f99059fF775485246999027B3197955';
 const USDT_ABI = ['function balanceOf(address) view returns (uint256)'];
@@ -50,81 +49,28 @@ async function _getBalancesForAddress(address, chain) {
     }
 }
 
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA: getPendingWithdrawals ---
 const getPendingWithdrawals = asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-
-    const aggregationPipeline = [
-        { $unwind: '$transactions' },
-        { $match: { 'transactions.type': 'withdrawal', 'transactions.status': 'pending' } },
-        { $sort: { 'transactions.createdAt': -1 } },
-        {
-            $group: {
-                _id: null,
-                total: { $sum: 1 },
-                items: { $push: {
-                    _id: '$transactions._id',
-                    amount: '$transactions.amount',
-                    currency: '$transactions.currency',
-                    description: '$transactions.description',
-                    status: '$transactions.status',
-                    metadata: '$transactions.metadata',
-                    createdAt: '$transactions.createdAt',
-                    user: {
-                        _id: '$_id',
-                        username: '$username',
-                        telegramId: '$telegramId',
-                        photoFileId: '$photoFileId'
-                    }
-                }}
-            }
-        }
-    ];
-
+    const aggregationPipeline = [ { $unwind: '$transactions' }, { $match: { 'transactions.type': 'withdrawal', 'transactions.status': 'pending' } }, { $sort: { 'transactions.createdAt': -1 } }, { $group: { _id: null, total: { $sum: 1 }, items: { $push: { _id: '$transactions._id', amount: '$transactions.amount', currency: '$transactions.currency', description: '$transactions.description', status: '$transactions.status', metadata: '$transactions.metadata', createdAt: '$transactions.createdAt', user: { _id: '$_id', username: '$username', telegramId: '$telegramId', photoFileId: '$photoFileId' } } } } } ];
     const results = await User.aggregate(aggregationPipeline);
-
-    if (!results || results.length === 0) {
-        return res.json({ withdrawals: [], page: 1, pages: 0, total: 0 });
-    }
-
+    if (!results || results.length === 0) { return res.json({ withdrawals: [], page: 1, pages: 0, total: 0 }); }
     const { total, items } = results[0];
-    
     const paginatedItems = items.slice((page - 1) * limit, page * limit);
-
-    const withdrawalsWithDetails = await Promise.all(paginatedItems.map(async (w) => {
-        const photoUrl = await getTemporaryPhotoUrl(w.user.photoFileId);
-        return { ...w, user: { ...w.user, photoUrl: photoUrl || PLACEHOLDER_AVATAR_URL } };
-    }));
-
-    res.json({
-        withdrawals: withdrawalsWithDetails,
-        page,
-        pages: Math.ceil(total / limit),
-        total
-    });
+    const withdrawalsWithDetails = await Promise.all(paginatedItems.map(async (w) => { const photoUrl = await getTemporaryPhotoUrl(w.user.photoFileId); return { ...w, user: { ...w.user, photoUrl: photoUrl || PLACEHOLDER_AVATAR_URL } }; }));
+    res.json({ withdrawals: withdrawalsWithDetails, page, pages: Math.ceil(total / limit), total });
 });
 
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA: processWithdrawal ---
 const processWithdrawal = asyncHandler(async (req, res) => {
     const { status, adminNotes } = req.body;
     const { id: transactionId } = req.params;
-    
-    if (!['completed', 'rejected'].includes(status)) {
-        res.status(400); throw new Error("El estado debe ser 'completed' o 'rejected'.");
-    }
-
+    if (!['completed', 'rejected'].includes(status)) { res.status(400); throw new Error("El estado debe ser 'completed' o 'rejected'."); }
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
-
         const user = await User.findOne({ 'transactions._id': transactionId, 'transactions.status': 'pending' }).session(session);
-        if (!user) {
-            throw new Error('Retiro no encontrado, ya ha sido procesado, o no existe.');
-        }
-
+        if (!user) { throw new Error('Retiro no encontrado, ya ha sido procesado, o no existe.'); }
         const withdrawal = user.transactions.id(transactionId);
-        
         let notificationMessage = '';
         if (status === 'completed') {
             withdrawal.status = 'completed';
@@ -136,19 +82,12 @@ const processWithdrawal = asyncHandler(async (req, res) => {
             withdrawal.description = `Retiro rechazado. Fondos devueltos al saldo.`;
             notificationMessage = `❌ <b>Retiro Rechazado</b>\n\nTu solicitud de retiro por <b>${Math.abs(withdrawal.amount)} USDT</b> ha sido rechazada.\n\n<b>Motivo:</b> ${adminNotes || 'Contacta a soporte.'}`;
         }
-
         withdrawal.metadata.adminNotes = adminNotes || 'N/A';
         withdrawal.metadata.processedBy = req.user.username;
-
         await user.save({ session });
         await session.commitTransaction();
-
-        if (user.telegramId && notificationMessage) {
-            await sendTelegramMessage(user.telegramId, notificationMessage);
-        }
-
+        if (user.telegramId && notificationMessage) { await sendTelegramMessage(user.telegramId, notificationMessage); }
         res.json({ message: `Retiro marcado como '${status}' exitosamente.`, withdrawal });
-
     } catch (error) {
         await session.abortTransaction();
         console.error("Error en processWithdrawal:", error);
@@ -158,83 +97,66 @@ const processWithdrawal = asyncHandler(async (req, res) => {
     }
 });
 
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA: getUserDetails ---
 const getUserDetails = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-        res.status(400);
-        throw new Error('ID de usuario no válido.');
-    }
-
+    if (!mongoose.Types.ObjectId.isValid(id)) { res.status(400); throw new Error('ID de usuario no válido.'); }
     const user = await User.findById(id).select('-password').lean();
-    if (!user) {
-        res.status(404);
-        throw new Error('Usuario no encontrado.');
-    }
-
-    const [referrals, cryptoWallets] = await Promise.all([
-        User.find({ referredBy: id }).select('username fullName telegramId photoFileId createdAt').lean(),
-        CryptoWallet.find({ user: id }).lean()
-    ]);
-
-    const [userPhotoUrl, referralsWithPhoto] = await Promise.all([
-        getTemporaryPhotoUrl(user.photoFileId),
-        Promise.all(referrals.map(async (ref) => ({
-            ...ref,
-            photoUrl: await getTemporaryPhotoUrl(ref.photoFileId) || PLACEHOLDER_AVATAR_URL
-        })))
-    ]);
-
+    if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); }
+    const [referrals, cryptoWallets] = await Promise.all([ User.find({ referredBy: id }).select('username fullName telegramId photoFileId createdAt').lean(), CryptoWallet.find({ user: id }).lean() ]);
+    const [userPhotoUrl, referralsWithPhoto] = await Promise.all([ getTemporaryPhotoUrl(user.photoFileId), Promise.all(referrals.map(async (ref) => ({ ...ref, photoUrl: await getTemporaryPhotoUrl(ref.photoFileId) || PLACEHOLDER_AVATAR_URL }))) ]);
     const page = parseInt(req.query.page) || 1;
     const limit = 10;
     const allTransactions = user.transactions || [];
     const sortedTransactions = allTransactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    
     const paginatedTransactions = sortedTransactions.slice((page - 1) * limit, page * limit);
     const totalTransactions = sortedTransactions.length;
-
-    res.json({
-        user: { ...user, photoUrl: userPhotoUrl || PLACEHOLDER_AVATAR_URL },
-        referrals: referralsWithPhoto,
-        cryptoWallets,
-        transactions: {
-            items: paginatedTransactions,
-            page,
-            totalPages: Math.ceil(totalTransactions / limit),
-            totalItems: totalTransactions
-        }
-    });
+    res.json({ user: { ...user, photoUrl: userPhotoUrl || PLACEHOLDER_AVATAR_URL }, referrals: referralsWithPhoto, cryptoWallets, transactions: { items: paginatedTransactions, page, totalPages: Math.ceil(totalTransactions / limit), totalItems: totalTransactions } });
 });
 
 const getPendingBlockchainTxs = asyncHandler(async (req, res) => { const pendingTxs = await PendingTx.find().sort({ createdAt: -1 }).limit(50); res.json(pendingTxs); });
-const checkAndSendGasAlert = asyncHandler(async (req, res) => { try { const settings = await Setting.getSettings(); if (!settings || !settings.adminTelegramId) return; const threshold = settings.bnbAlertThreshold; if (currentBnbBalance < threshold) { const message = `🚨 <b>Alerta de Nivel de Gas Bajo</b> 🚨\n\n` + `La billetera central de la red <b>BSC</b> tiene un balance de <b>${currentBnbBalance.toFixed(4)} BNB</b>, ` + `el cual está por debajo del umbral de alerta de <b>${threshold} BNB</b>.\n\n` + `Por favor, recargue fondos para asegurar la continuidad de las operaciones.`; await sendTelegramMessage(settings.adminTelegramId, message); } } catch (error) { console.error("Error al enviar la alerta de gas:", error); } });
 const adjustUserBalance = asyncHandler(async (req, res) => { const { id } = req.params; const { type, currency, amount, reason } = req.body; if (!['admin_credit', 'admin_debit'].includes(type) || !['USDT'].includes(currency) || !amount || !reason) { res.status(400); throw new Error("Parámetros inválidos. Moneda debe ser USDT."); } const session = await mongoose.startSession(); try { session.startTransaction(); const user = await User.findById(id).session(session); if(!user) { throw new Error('Usuario no encontrado'); } const currencyKey = currency.toLowerCase(); if (type === 'admin_credit') { user.balance[currencyKey] = (user.balance[currencyKey] || 0) + amount; } else { if ((user.balance[currencyKey] || 0) < amount) { throw new Error('Saldo insuficiente para realizar el débito.'); } user.balance[currencyKey] -= amount; } user.transactions.push({ type, amount: type === 'admin_credit' ? amount : -amount, currency, description: reason, status: 'completed', metadata: { adminUsername: req.user.username } }); await user.save({ session }); await session.commitTransaction(); res.status(200).json({ message: 'Saldo ajustado exitosamente.', user: user.toObject() }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
 const getAllUsers = asyncHandler(async (req, res) => { const pageSize = 10; const page = Number(req.query.page) || 1; const filter = req.query.search ? { $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] } : {}; const count = await User.countDocuments(filter); const users = await User.find(filter).select('username telegramId role status createdAt balance.usdt photoFileId mustPurchaseToWithdraw isBanned').sort({ createdAt: -1 }).limit(pageSize).skip(pageSize * (page - 1)).lean(); const usersWithPhotoUrl = await Promise.all(users.map(async (user) => ({ ...user, photoUrl: await getTemporaryPhotoUrl(user.photoFileId) || PLACEHOLDER_AVATAR_URL }))); res.json({ users: usersWithPhotoUrl, page, pages: Math.ceil(count / pageSize), totalUsers: count }); });
-const updateUser = asyncHandler(async (req, res) => { const { username, password, balanceUsdt, mustPurchaseToWithdraw, isBanned, status } = req.body; const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } user.username = username ?? user.username; user.balance.usdt = balanceUsdt ?? user.balance.usdt; user.status = status ?? user.status; if (mustPurchaseToWithdraw !== undefined) { user.mustPurchaseToWithdraw = mustPurchaseToWithdraw; } if (isBanned !== undefined) { user.isBanned = isBanned; user.status = isBanned ? 'banned' : 'active'; } if (password) { user.password = password; if (user.role === 'admin' && req.user.telegramId === process.env.ADMIN_TELEGRAM_ID) { user.passwordResetRequired = true; } } const updatedUser = await user.save(); res.json(updatedUser); });
+const updateUser = asyncHandler(async (req, res) => { const { username, password, balanceUsdt, mustPurchaseToWithdraw, isBanned, status } = req.body; const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } user.username = username ?? user.username; user.balance.usdt = balanceUsdt ?? user.balance.usdt; user.status = status ?? user.status; if (mustPurchaseToWithdraw !== undefined) { user.mustPurchaseToWithdraw = mustPurchaseToWithdraw; } if (isBanned !== undefined) { user.isBanned = isBanned; user.status = isBanned ? 'banned' : 'active'; } if (password) { user.password = password; } const updatedUser = await user.save(); res.json(updatedUser); });
 const setUserStatus = asyncHandler(async (req, res) => { const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user._id.equals(req.user._id)) { res.status(400); throw new Error('No puedes cambiar tu propio estado.'); } user.status = req.body.status; const updatedUser = await user.save(); res.json(updatedUser); });
-const getAllTransactions = asyncHandler(async (req, res) => { const pageSize = 15; const page = Number(req.query.page) || 1; let filter = {}; if (req.query.type) { filter.type = req.query.type; } if (req.query.search) { const usersFound = await User.find({ $or: [{ username: { $regex: req.query.search, $options: 'i' } }, { telegramId: { $regex: req.query.search, $options: 'i' } }] }).select('_id'); filter.user = { $in: usersFound.map(user => user._id) }; } const count = await Transaction.countDocuments(filter); const transactions = await Transaction.find(filter).sort({ createdAt: -1 }).populate('user', 'username telegramId').limit(pageSize).skip(pageSize * (page - 1)).lean(); res.json({ transactions, page, pages: Math.ceil(count / pageSize), totalTransactions: count }); });
-const createManualTransaction = asyncHandler(async (req, res) => { const { userId, type, currency, amount, reason } = req.body; const session = await mongoose.startSession(); try { session.startTransaction(); const user = await User.findById(userId).session(session); if (!user) throw new Error('Usuario no encontrado.'); const currencyKey = currency.toLowerCase(); const originalBalance = user.balance[currencyKey] || 0; if (type === 'admin_credit') { user.balance[currencyKey] += amount; } else { if (originalBalance < amount) throw new Error('Saldo insuficiente para realizar el débito.'); user.balance[currencyKey] -= amount; } const updatedUser = await user.save({ session }); const transaction = new Transaction({ user: userId, type, currency, amount, description: reason, status: 'completed', metadata: { adminId: req.user._id.toString(), adminUsername: req.user.username } }); await transaction.save({ session }); await session.commitTransaction(); res.status(201).json({ message: 'Transacción manual creada.', user: updatedUser.toObject() }); } catch (error) { await session.abortTransaction(); res.status(500).json({ message: error.message }); } finally { session.endSession(); } });
-const getDashboardStats = asyncHandler(async (req, res) => { const [ totalUsers, totalDepositVolume, pendingWithdrawals, ] = await Promise.all([ User.countDocuments(), Transaction.aggregate([ { $match: { type: 'deposit', currency: 'USDT' } }, { $group: { _id: null, totalVolume: { $sum: '$amount' } } } ]), Transaction.countDocuments({ type: 'withdrawal', status: 'pending' }) ]); let centralWalletBalances = { usdt: 0, bnb: 0 }; try { const { bscWallet } = transactionService.getCentralWallets(); const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/'); const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider); const [bnbBalanceRaw, usdtBscBalanceRaw] = await Promise.all([ bscProvider.getBalance(bscWallet.address), usdtBscContract.balanceOf(bscWallet.address) ]); centralWalletBalances = { bnb: parseFloat(ethers.utils.formatEther(bnbBalanceRaw)), usdt: parseFloat(ethers.utils.formatUnits(usdtBscBalanceRaw, 18)) }; await checkAndSendGasAlert(centralWalletBalances.bnb); } catch (error) { console.error("Error al obtener el balance de la billetera central (Dashboard):", error); centralWalletBalances = { usdt: 0, bnb: 0 }; } res.json({ totalUsers, totalDepositVolume: totalDepositVolume[0]?.totalVolume || 0, pendingWithdrawals, centralWalletBalances }); });
+
+const getAllTransactions = asyncHandler(async (req, res) => {
+    const page = Number(req.query.page) || 1;
+    const pageSize = 15;
+    const typeFilter = req.query.type;
+    const searchQuery = req.query.search;
+    let pipeline = [];
+    if (searchQuery) {
+        pipeline.push({ $match: { $or: [ { username: { $regex: searchQuery, $options: 'i' } }, { telegramId: { $regex: searchQuery, $options: 'i' } } ] } });
+    }
+    pipeline.push({ $unwind: '$transactions' });
+    if (typeFilter) {
+        pipeline.push({ $match: { 'transactions.type': typeFilter } });
+    }
+    pipeline.push({ $sort: { 'transactions.createdAt': -1 } });
+    const facetPipeline = [ ...pipeline, { $facet: { paginatedResults: [ { $skip: pageSize * (page - 1) }, { $limit: pageSize } ], totalCount: [ { $count: 'count' } ] } } ];
+    const results = await User.aggregate(facetPipeline);
+    const paginatedItems = results[0].paginatedResults;
+    const totalTransactions = results[0].totalCount[0] ? results[0].totalCount[0].count : 0;
+    const transactions = paginatedItems.map(item => ({ ...item.transactions, user: { _id: item._id, username: item.username, telegramId: item.telegramId } }));
+    res.json({ transactions, page, pages: Math.ceil(totalTransactions / pageSize), totalTransactions });
+});
+
+const getDashboardStats = asyncHandler(async (req, res) => {
+    const [ totalUsers, totalDepositVolume ] = await Promise.all([
+        User.countDocuments(),
+        User.aggregate([ { $unwind: '$transactions' }, { $match: { 'transactions.type': 'deposit' } }, { $group: { _id: null, total: { $sum: '$transactions.amount' } } } ])
+    ]);
+    const pendingWithdrawalsResult = await User.aggregate([ { $unwind: '$transactions' }, { $match: { 'transactions.type': 'withdrawal', 'transactions.status': 'pending' } }, { $count: 'total' } ]);
+    const pendingWithdrawals = pendingWithdrawalsResult.length > 0 ? pendingWithdrawalsResult[0].total : 0;
+    res.json({ totalUsers, totalDepositVolume: totalDepositVolume.length > 0 ? totalDepositVolume[0].total : 0, pendingWithdrawals });
+});
+
 const getAllFactories = asyncHandler(async (req, res) => { const factories = await Factory.find({}).sort({ vipLevel: 1 }).lean(); res.json(factories); });
 const createFactory = asyncHandler(async (req, res) => { const newFactory = await Factory.create(req.body); res.status(201).json(newFactory); });
 const updateFactory = asyncHandler(async (req, res) => { const factory = await Factory.findByIdAndUpdate(req.params.id, req.body, { new: true }); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); res.json(factory); });
 const deleteFactory = asyncHandler(async (req, res) => { const factory = await Factory.findById(req.params.id); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); await factory.deleteOne(); res.json({ message: 'Fábrica eliminada.' }); });
 const getSettings = asyncHandler(async (req, res) => { const settings = await Setting.getSettings(); res.json(settings); });
 const updateSettings = asyncHandler(async (req, res) => { const { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 } = req.body; const settingsToUpdate = { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 }; const updatedSettings = await Setting.findByIdAndUpdate( 'global_settings', settingsToUpdate, { new: true, upsert: true, runValidators: true } ); res.json(updatedSettings); });
-const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `MegaFabrica Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
-const verifyAndEnableTwoFactor = asyncHandler(async (req, res) => { const { token } = req.body; const user = await User.findById(req.user.id).select('+twoFactorSecret'); if (!user || !user.twoFactorSecret) return res.status(400).json({ message: 'No se ha generado un secreto 2FA.' }); const verified = speakeasy.totp.verify({ secret: user.twoFactorSecret, encoding: 'base32', token }); if (verified) { user.isTwoFactorEnabled = true; await user.save(); res.json({ message: '¡2FA habilitado!' }); } else { res.status(400).json({ message: 'Token inválido.' }); }});
-const getWalletBalance = asyncHandler(async (req, res) => { const { address, chain } = req.body; if (!address || !chain) { res.status(400); throw new Error('Se requiere address y chain'); } try { const balances = await _getBalancesForAddress(address, chain); res.json({ success: true, balances }); } catch (error) { res.status(500).json({ success: false, message: error.message }); }});
-const getTreasuryWalletsList = asyncHandler(async (req, res) => { const page = parseInt(req.query.page) || 1; const limit = parseInt(req.query.limit) || 15; const chain = req.query.chain || null; const search = req.query.search || ''; let query = {}; if (chain) query.chain = chain; if (search) { const userQuery = { username: { $regex: search, $options: 'i' } }; const users = await User.find(userQuery).select('_id'); const userIds = users.map(u => u._id); query.$or = [{ address: { $regex: search, $options: 'i' } }, { user: { $in: userIds } }]; } const [totalWallets, wallets] = await Promise.all([ CryptoWallet.countDocuments(query), CryptoWallet.find(query).populate('user', 'username').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean() ]); if (totalWallets === 0) { return res.json({ wallets: [], pagination: { currentPage: 1, totalPages: 0, totalWallets: 0 }, summary: { usdt: 0, bnb: 0 } }); } const walletsWithDetails = await Promise.all(wallets.map(async (wallet) => { try { const balances = await _getBalancesForAddress(wallet.address, wallet.chain); let estimatedRequiredGas = 0; if (balances.usdt > 0.000001) { try { estimatedRequiredGas = await gasEstimatorService.estimateBscSweepCost(wallet.address, balances.usdt); } catch (gasError) { console.error(`Error estimando gas para ${wallet.address}: ${gasError.message}`); estimatedRequiredGas = 0; } } return { ...wallet, usdtBalance: balances.usdt, gasBalance: balances.bnb, estimatedRequiredGas }; } catch (error) { return { ...wallet, usdtBalance: 0, gasBalance: 0, estimatedRequiredGas: 0, error: `Fallo al obtener balance: ${error.message}` }; } })); const summary = walletsWithDetails.reduce((acc, wallet) => { acc.usdt += wallet.usdtBalance || 0; acc.bnb += wallet.gasBalance || 0; return acc; }, { usdt: 0, bnb: 0 }); res.json({ wallets: walletsWithDetails, pagination: { currentPage: page, totalPages: Math.ceil(totalWallets / limit), totalWallets }, summary }); });
-const sweepFunds = asyncHandler(async (req, res) => { const { chain, token, recipientAddress, walletsToSweep } = req.body; if (!chain || !token || !recipientAddress || !walletsToSweep || !Array.isArray(walletsToSweep)) { res.status(400); throw new Error("Parámetros de barrido inválidos."); } if (chain.toUpperCase() !== 'BSC') { res.status(400); throw new Error("Solo se puede barrer desde la cadena BSC."); } if (token.toUpperCase() !== 'USDT') { res.status(400); throw new Error("Solo se puede barrer USDT."); } const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: chain }).lean(); if (wallets.length === 0) { return res.json({ message: "Wallets candidatas no encontradas.", summary: {}, details: [] }); } const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedTxs: 0, totalSwept: 0 }, details: [] }; const sweepFunction = transactionService.sweepUsdtOnBscFromDerivedWallet; for (const wallet of wallets) { try { const { txHash, amountSwept } = await sweepFunction(wallet.derivationIndex, recipientAddress); report.summary.successfulSweeps++; report.summary.totalSwept += amountSwept; report.details.push({ address: wallet.address, status: 'SUCCESS', txHash, amount: amountSwept }); } catch (error) { report.summary.failedTxs++; report.details.push({ address: wallet.address, status: 'FAILED', reason: error.message }); } } res.json(report); });
-const sweepGas = asyncHandler(async (req, res) => { const { chain, recipientAddress, walletsToSweep } = req.body; if (chain !== 'BSC') { res.status(400); throw new Error("Cadena no soportada para barrido de gas. Debe ser BSC."); } if (!recipientAddress || !walletsToSweep || !Array.isArray(walletsToSweep)) { res.status(400); throw new Error("Parámetros de barrido de gas inválidos."); } const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: chain }).lean(); if (wallets.length === 0) { return res.json({ message: "Wallets candidatas no encontradas.", summary: {}, details: [] }); } const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedTxs: 0 }, details: [] }; const sweepFunction = transactionService.sweepBnbFromDerivedWallet; for (const wallet of wallets) { try { const txHash = await sweepFunction(wallet.derivationIndex, recipientAddress); await new Promise(resolve => setTimeout(resolve, 200)); report.summary.successfulSweeps++; report.details.push({ address: wallet.address, status: 'SUCCESS', txHash }); } catch (error) { report.summary.failedTxs++; report.details.push({ address: wallet.address, status: 'FAILED', reason: error.message }); } } res.json(report); });
-const analyzeGasNeeds = asyncHandler(async (req, res) => { const page = parseInt(req.query.page) || 1; const limit = parseInt(req.query.limit) || 15; const chain = req.query.chain; if (chain !== 'BSC') { res.status(400); throw new Error("Cadena no válida. Debe ser BSC."); } let centralWalletBalance = 0; const { bscWallet } = transactionService.getCentralWallets(); const centralAddress = bscWallet.address; const [totalWalletsInChain, balanceRaw] = await Promise.all([ CryptoWallet.countDocuments({ chain: 'BSC' }), new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/').getBalance(centralAddress) ]).catch(err => { console.error("Fallo al obtener datos iniciales (Dispensador):", err); throw new Error("Error de red al contactar nodo Blockchain."); }); centralWalletBalance = parseFloat(ethers.utils.formatEther(balanceRaw)); const walletsOnPage = await CryptoWallet.find({ chain }).populate('user', 'username').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(); const walletsNeedingGasPromises = walletsOnPage.map(async (wallet) => { try { const balances = await _getBalancesForAddress(wallet.address, chain); if (!balances || balances.usdt <= 0.000001) return null; const requiredGas = await gasEstimatorService.estimateBscSweepCost(wallet.address, balances.usdt); const gasBalance = balances.bnb; if (gasBalance < requiredGas - GAS_SUFFICIENT_TOLERANCE) { return { address: wallet.address, user: wallet.user, usdtBalance: balances.usdt, gasBalance, requiredGas }; } return null; } catch (error) { console.error(`Error analizando gas para wallet ${wallet.address}: ${error.message}`); return null; } }); const filteredWallets = (await Promise.all(walletsNeedingGasPromises)).filter(Boolean); res.json({ centralWalletBalance, wallets: filteredWallets, pagination: { currentPage: page, totalPages: Math.ceil(totalWalletsInChain / limit), totalWallets: filteredWallets.length } }); });
-const dispatchGas = asyncHandler(async (req, res) => { const { chain, targets } = req.body; if (chain !== 'BSC' || !Array.isArray(targets) || targets.length === 0) { res.status(400); throw new Error("Petición inválida. La cadena debe ser BSC."); } const report = { summary: { success: 0, failed: 0, totalDispatched: 0 }, details: [] }; const sendFunction = transactionService.sendBscGas; for (const target of targets) { try { const txHash = await sendFunction(target.address, target.amount); report.summary.success++; report.summary.totalDispatched += parseFloat(target.amount); report.details.push({ address: target.address, status: 'SUCCESS', txHash, amount: target.amount }); } catch (error) { report.summary.failed++; report.details.push({ address: target.address, status: 'FAILED', reason: error.message, amount: target.amount }); } } res.json(report); });
-const sendBroadcastNotification = asyncHandler(async (req, res) => { const { message, target, imageUrl, buttons } = req.body; if (!message || !target) { res.status(400); throw new Error("Mensaje y público objetivo son requeridos."); } let usersToNotify = []; if (target.type === 'all') { usersToNotify = await User.find({ status: 'active' }).select('telegramId').lean(); } else if (target.type === 'id' && target.value) { const user = await User.findOne({ telegramId: target.value }).select('telegramId').lean(); if (user) usersToNotify.push(user); } if (usersToNotify.length === 0) { return res.json({ message: "No se encontraron usuarios para notificar." }); } res.status(202).json({ message: `Enviando notificación a ${usersToNotify.length} usuarios. Este proceso puede tardar.` }); (async () => { let successCount = 0; for (const user of usersToNotify) { const result = await sendTelegramMessage(user.telegramId, message, { imageUrl, buttons }); if(result.success) successCount++; await new Promise(resolve => setTimeout(resolve, 100)); } console.log(`[Broadcast] Notificación completada. ${successCount}/${usersToNotify.length} envíos exitosos.`); })(); });
-const cancelTransaction = asyncHandler(async (req, res) => { const { txHash } = req.body; if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); } res.status(501).json({ message: 'Funcionalidad no implementada todavía.', requestedTxHash: txHash }); });
-const speedUpTransaction = asyncHandler(async (req, res) => { const { txHash } = req.body; if (!txHash) { res.status(400); throw new Error("Se requiere el hash de la transacción."); } res.status(501).json({ message: 'Funcionalidad no implementada todavía.', requestedTxHash: txHash }); });
-const promoteUserToAdmin = asyncHandler(async (req, res) => { const { userId, temporaryPassword } = req.body; if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) { res.status(403); throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.'); } if (!userId || !temporaryPassword) { res.status(400); throw new Error('Se requiere ID de usuario y contraseña temporal.'); } const userToPromote = await User.findById(userId); if (!userToPromote) { res.status(404); throw new Error('Usuario a promover no encontrado.'); } userToPromote.role = 'admin'; userToPromote.password = temporaryPassword; userToPromote.passwordResetRequired = true; await userToPromote.save(); res.json({ message: `El usuario ${userToPromote.username} ha sido promovido a Administrador.` }); });
-const resetAdminPassword = asyncHandler(async (req, res) => { const { userId, newTemporaryPassword } = req.body; if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) { res.status(403); throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.'); } if (!userId || !newTemporaryPassword) { res.status(400); throw new Error('Se requiere ID de usuario y nueva contraseña temporal.'); } const adminToReset = await User.findById(userId).select('+password'); if (!adminToReset || adminToReset.role !== 'admin') { res.status(404); throw new Error('Administrador no encontrado.'); } adminToReset.password = newTemporaryPassword; adminToReset.passwordResetRequired = true; await adminToReset.save(); res.json({ message: `La contraseña del administrador ${adminToReset.username} ha sido restablecida.` }); });
-const demoteAdminToUser = asyncHandler(async (req, res) => { const { userId } = req.body; if (req.user.telegramId !== process.env.ADMIN_TELEGRAM_ID) { res.status(403); throw new Error('Acción no autorizada. Requiere permisos de Super Administrador.'); } const adminToDemote = await User.findById(userId); if (!adminToDemote || adminToDemote.role !== 'admin') { res.status(404); throw new Error('Administrador no encontrado.'); } if (adminToDemote.telegramId === process.env.ADMIN_TELEGRAM_ID) { res.status(400); throw new Error('No se puede degradar al Super Administrador.'); } adminToDemote.role = 'user'; adminToDemote.password = undefined; adminToDemote.passwordResetRequired = false; await adminToDemote.save(); res.json({ message: `El administrador ${adminToDemote.username} ha sido degradado a usuario.` }); });
 
 module.exports = {
   getPendingWithdrawals,
@@ -244,7 +166,6 @@ module.exports = {
   setUserStatus,
   getDashboardStats,
   getAllTransactions,
-  createManualTransaction,
   getAllFactories,
   createFactory,
   updateFactory,
@@ -252,20 +173,6 @@ module.exports = {
   getUserDetails,
   getSettings,
   updateSettings,
-  generateTwoFactorSecret,
-  verifyAndEnableTwoFactor,
-  getTreasuryWalletsList,
-  getWalletBalance,
-  sweepFunds,
-  analyzeGasNeeds,
-  dispatchGas,
-  adjustUserBalance,
-  sendBroadcastNotification,
   getPendingBlockchainTxs,
-  cancelTransaction,
-  speedUpTransaction,
-  sweepGas,
-  promoteUserToAdmin,
-  resetAdminPassword,
-  demoteAdminToUser
+  adjustUserBalance
 };
