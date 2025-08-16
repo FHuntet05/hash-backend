@@ -1,0 +1,20 @@
+# Dependencias
+# Le decimos a Git que ignore por completo la caja de herramientas.
+node_modules
+
+# Archivos de entorno
+# ¡CRÍTICO! Nunca suba sus contraseñas o claves secretas a un repositorio.
+.env
+
+# Logs
+# Ignora archivos de registro que pueden contener información sensible.
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Carpetas de build y producción
+# Ignora carpetas que se generan automáticamente.
+dist
+build
