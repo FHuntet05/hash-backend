@@ -68,10 +68,7 @@ const getTeamStats = async (req, res) => {
       ],
     };
 
-    // --- LOG DE AUDITORÍA AÑADIDO ---
-    console.log(`[TeamStats] ✅ Datos generados para usuario ${userId}. Comisión Total: ${totalCommission}. Enviando respuesta...`.green);
-    // --- FIN DEL LOG AÑADIDO ---
-
+   
     res.json(stats);
 
   } catch (error) {
