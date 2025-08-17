@@ -1,4 +1,4 @@
-// backend/services/transactionMonitor.js (VERSIÓN v37.0 - REINGENIERÍA RPC RESILIENTE)
+// backend/services/transactionMonitor.js (VERSIÓN v38.0 - MIGRACIÓN FINAL A INFRAESTRUCTURA ANKR)
 
 const axios = require('axios');
 const User = require('../models/userModel');
@@ -8,74 +8,167 @@ const { ethers } = require('ethers');
 const { sendTelegramMessage } = require('./notificationService');
 const { getPrice } = require('./priceService');
 
-const USDT_CONTRACT_BSC = '0x55d398326f99059fF775485246999027B3197955';
-const BUSD_CONTRACT_BSC = '0xe9e7CEA3DedcA5984780Bf86fEE1060eC3d'; 
-const BSC_STABLECOIN_CONTRACTS = [USDT_CONTRACT_BSC.toLowerCase(), BUSD_CONTRACT_BSC.toLowerCase()];
-const BSC_API_KEY = process.env.BSCSCAN_API_KEY;
-const BATCH_SIZE_BSC = 500;
-const SYNC_THRESHOLD_BSC = 5000;
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 1000;
+// --- CONSTANTES DE CONFIGURACIÓN ---
+const USDT_CONTRACT_BSC = '0x55d398326f99059fF775485246999027B3197955'.toLowerCase();
 
-// --- INICIO DE LA REINGENIERÍA RPC ---
-// Se cargan múltiples endpoints RPC desde las variables de entorno para redundancia.
-const BSC_RPC_URLS = (process.env.BSC_RPC_URLS || 'https://bsc-dataseed.binance.org/').split(',');
-if (!BSC_RPC_URLS || BSC_RPC_URLS.length === 0) {
-    console.error("[MONITOR] ERROR FATAL: No se han definido BSC_RPC_URLS en el archivo .env".red.bold);
+// --- INICIO DE LA REINGENIERÍA CON ANKR ---
+if (!process.env.ANKR_BSC_RPC_URL) {
+    console.error("[MONITOR] ERROR FATAL: La variable de entorno ANKR_BSC_RPC_URL no está definida.".red.bold);
     process.exit(1);
 }
-console.log(`[MONITOR] Proveedores RPC de BSC configurados: ${BSC_RPC_URLS.length}`.cyan);
-// --- FIN DE LA REINGENIERÍA RPC ---
+// Se crea una conexión persistente y optimizada al proveedor RPC.
+const ankrProvider = new ethers.providers.JsonRpcProvider(process.env.ANKR_BSC_RPC_URL);
+console.log(`[MONITOR] Conectado a la infraestructura RPC de Ankr para BSC.`.cyan.bold);
+// --- FIN DE LA REINGENIERÍA CON ANKR ---
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-async function makeHttpRequestWithRetries(url, config = {}, retries = 0) {
-    try { return await axios.get(url, config); } catch (error) { if (retries < MAX_RETRIES) { const delay = RETRY_DELAY_MS * Math.pow(2, retries); console.warn(`[HTTP_RETRY] Intento ${retries + 1} fallido para ${url}. Reintentando en ${delay / 1000}s. Error: ${error.message}`); await sleep(delay); return makeHttpRequestWithRetries(url, config, retries + 1); } else { throw error; } }
-}
 
 async function processDeposit(tx, wallet, amount, currency, txid, blockIdentifier) {
+    // Verificación de duplicados para máxima integridad.
     const existingTx = await User.findOne({ 'transactions.metadata.txid': txid });
-    if (existingTx) { return; }
+    if (existingTx) {
+        return; // Transacción ya procesada.
+    }
+
     console.log(`[ProcessDeposit] Procesando nuevo depósito: ${amount} ${currency} para usuario ${wallet.user} (TXID: ${txid})`);
-    const price = (currency === 'BNB') ? await getPrice(currency) : 1;
-    if (!price) { console.error(`[ProcessDeposit] PRECIO NO ENCONTRADO para ${currency}. Saltando transacción ${txid}.`); return; }
+    
+    // Asumimos que el precio de USDT es siempre 1.
+    const price = 1; 
     const amountInUSDT = amount * price;
+    
     const user = await User.findById(wallet.user);
-    if (!user) { console.error(`[ProcessDeposit] Usuario no encontrado para wallet ${wallet._id}. Abortando depósito.`); return; }
-    const newTransaction = { type: 'deposit', amount: amountInUSDT, currency: 'USDT', description: `Depósito de ${amount.toFixed(6)} ${currency} acreditado como ${amountInUSDT.toFixed(2)} USDT`, status: 'completed', metadata: { txid: txid, chain: wallet.chain, fromAddress: tx.from, toAddress: tx.to, originalAmount: amount.toString(), originalCurrency: currency, priceUsed: price.toString(), blockIdentifier: blockIdentifier.toString(), } };
-    user.balance.usdt += amountInUSDT;
+    if (!user) {
+        console.error(`[ProcessDeposit] Usuario no encontrado para wallet ${wallet._id}. Abortando depósito.`);
+        return;
+    }
+
+    const newTransaction = {
+        type: 'deposit',
+        amount: amountInUSDT,
+        currency: 'USDT',
+        description: `Depósito de ${amount.toFixed(6)} ${currency} acreditado como ${amountInUSDT.toFixed(2)} USDT`,
+        status: 'completed',
+        metadata: {
+            txid: txid,
+            chain: wallet.chain,
+            fromAddress: tx.from,
+            toAddress: tx.to,
+            originalAmount: amount.toString(),
+            originalCurrency: currency,
+            priceUsed: price.toString(),
+            blockIdentifier: blockIdentifier.toString(),
+        }
+    };
+
+    user.balance.usdt = (user.balance.usdt || 0) + amountInUSDT;
     user.totalRecharge = (user.totalRecharge || 0) + amountInUSDT;
     user.transactions.push(newTransaction);
+    
     await user.save();
-    console.log(`[ProcessDeposit] ✅ ÉXITO: Usuario ${user.username} acreditado con ${amountInUSDT.toFixed(2)} USDT y transacción registrada.`);
-    if (user.telegramId) { const message = `✅ <b>¡Depósito confirmado!</b>\n\nSe han acreditado <b>${amountInUSDT.toFixed(2)} USDT</b> a tu saldo.`; await sendTelegramMessage(user.telegramId, message); }
-}
-
-// --- FUNCIÓN CRÍTICA RECONSTRUIDA ---
-async function getCurrentBscBlock() {
-    // Se itera sobre la lista de RPCs. El primero que responda con éxito, gana.
-    for (const url of BSC_RPC_URLS) {
-        try {
-            const provider = new ethers.providers.JsonRpcProvider(url);
-            // Se usa un timeout agresivo para no esperar a un nodo colgado.
-            const blockNumber = await Promise.race([
-                provider.getBlockNumber(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 8000))
-            ]);
-            console.log(`[Monitor BSC] Bloque actual obtenido vía ${url}: ${blockNumber}`.green);
-            return blockNumber;
-        } catch (error) {
-            console.warn(`[Monitor BSC] Fallo al conectar con RPC ${url}: ${error.message}. Probando siguiente...`.yellow);
-        }
+    
+    console.log(`[ProcessDeposit] ✅ ÉXITO: Usuario ${user.username} acreditado con ${amountInUSDT.toFixed(2)} USDT y transacción registrada.`.green);
+    
+    if (user.telegramId) {
+        const message = `✅ <b>¡Depósito confirmado!</b>\n\nSe han acreditado <b>${amountInUSDT.toFixed(2)} USDT</b> a tu saldo.`;
+        await sendTelegramMessage(user.telegramId, message);
     }
-    // Si todos los RPCs fallan, se reporta el error crítico.
-    console.error("[Monitor BSC] ERROR CRÍTICO: No se pudo conectar a ningún proveedor RPC de la lista.".red.bold);
-    return null;
 }
-// --- FIN DE LA RECONSTRUCCIÓN ---
 
-async function scanBscBlockRange(wallet, startBlock, endBlock) { try { console.log(`[Monitor BSC] Escaneando ${wallet.address} de ${startBlock} a ${endBlock}`); const allTokenTxUrl = `https://api.bscscan.com/api?module=account&action=tokentx&address=${wallet.address}&startblock=${startBlock}&endblock=${endBlock}&sort=asc&apikey=${BSC_API_KEY}`; const allTokenTxResponse = await makeHttpRequestWithRetries(allTokenTxUrl, { timeout: 15000 }); if (allTokenTxResponse.data.status === '1' && Array.isArray(allTokenTxResponse.data.result)) { for (const tx of allTokenTxResponse.data.result) { const txContractAddressLower = tx.contractAddress ? tx.contractAddress.toLowerCase() : null; if (tx.to.toLowerCase() === wallet.address.toLowerCase() && BSC_STABLECOIN_CONTRACTS.includes(txContractAddressLower)) { const amount = parseFloat(ethers.utils.formatUnits(tx.value, tx.tokenDecimal)); const originalCurrency = txContractAddressLower === USDT_CONTRACT_BSC.toLowerCase() ? 'USDT' : 'BUSD'; await processDeposit(tx, wallet, amount, originalCurrency, tx.hash, tx.blockNumber); } } } await sleep(300); const bnbUrl = `https://api.bscscan.com/api?module=account&action=txlist&address=${wallet.address}&startblock=${startBlock}&endblock=${endBlock}&sort=asc&apikey=${BSC_API_KEY}`; const bnbResponse = await makeHttpRequestWithRetries(bnbUrl, { timeout: 15000 }); if (bnbResponse.data.status === '1' && Array.isArray(bnbResponse.data.result)) { for (const tx of bnbResponse.data.result) { if (tx.to.toLowerCase() === wallet.address.toLowerCase() && tx.value !== "0") { const amount = parseFloat(ethers.utils.formatEther(tx.value)); await processDeposit(tx, wallet, amount, 'BNB', tx.hash, tx.blockNumber); } } } } catch (error) { console.error(`[Monitor BSC] EXCEPCIÓN al escanear rango ${startBlock}-${endBlock} para ${wallet.address}: ${error.message}`); } }
-async function checkBscTransactions() { console.log("[Monitor BSC] Iniciando ciclo de escaneo STATEFUL para BSC."); const wallets = await CryptoWallet.find({ chain: 'BSC' }); if (wallets.length === 0) { console.log("[Monitor BSC] No hay billeteras BSC para escanear."); return; } const currentNetworkBlock = await getCurrentBscBlock(); if (!currentNetworkBlock) { console.error("[Monitor BSC] No se pudo obtener el bloque actual de la red. Saltando ciclo."); return; } console.log(`[Monitor BSC] Encontradas ${wallets.length} wallets. Bloque de red actual: ${currentNetworkBlock}`); for (const wallet of wallets) { let lastScanned = wallet.lastScannedBlock || 0; const blocksBehind = currentNetworkBlock - lastScanned; if (blocksBehind > SYNC_THRESHOLD_BSC) { console.log(`[Monitor BSC] Sincronización en lotes para ${wallet.address}. ${blocksBehind} bloques de diferencia.`); let fromBlock = lastScanned + 1; while (fromBlock < currentNetworkBlock) { const toBlock = Math.min(fromBlock + BATCH_SIZE_BSC - 1, currentNetworkBlock); await scanBscBlockRange(wallet, fromBlock, toBlock); await CryptoWallet.findByIdAndUpdate(wallet._id, { lastScannedBlock: toBlock }); fromBlock = toBlock + 1; await sleep(550); } } else if (blocksBehind > 0) { const startBlock = lastScanned + 1; await scanBscBlockRange(wallet, startBlock, currentNetworkBlock); } await CryptoWallet.findByIdAndUpdate(wallet._id, { lastScannedBlock: currentNetworkBlock }); await sleep(550); } }
-async function processPendingTransactionsStatus() { const pendingTxs = await PendingTx.find({ status: 'PENDING' }); if (pendingTxs.length === 0) { return; } console.log(`[Monitor PendingTx] Verificando ${pendingTxs.length} transacciones con estado PENDING...`); for (const tx of pendingTxs) { try { let isConfirmed = false; let txFailed = false; if (tx.chain === 'BSC') { const bscProvider = new ethers.providers.JsonRpcProvider(BSC_RPC_URLS[0]); const receipt = await bscProvider.getTransactionReceipt(tx.txHash); if (receipt) { if (receipt.status === 1) isConfirmed = true; if (receipt.status === 0) txFailed = true; } } if (isConfirmed) { tx.status = 'CONFIRMED'; console.log(`[Monitor PendingTx] ✅ Transacción ${tx.txHash} (${tx.chain}) CONFIRMADA.`); } else if (txFailed) { tx.status = 'FAILED'; console.log(`[Monitor PendingTx] ❌ Transacción ${tx.txHash} (${tx.chain}) FALLIDA.`); } tx.lastChecked = new Date(); await tx.save(); } catch (error) { console.error(`[Monitor PendingTx] Error al verificar tx ${tx.txHash}:`, error.message); } await sleep(200); } }
-const startMonitoring = () => { console.log('✅ Iniciando servicio de monitoreo de transacciones (BSC)...'); const runChecks = async () => { console.log("--- [Monitor] Iniciando ciclo de monitoreo de la red BSC ---"); await Promise.all([ checkBscTransactions(), processPendingTransactionsStatus() ]); console.log("--- [Monitor] Ciclo de monitoreo finalizado. Esperando al siguiente. ---"); }; runChecks(); setInterval(runChecks, 60000); };
+async function getCurrentBscBlock() {
+    try {
+        const blockNumber = await ankrProvider.getBlockNumber();
+        console.log(`[Monitor Ankr] Bloque actual de la red obtenido: ${blockNumber}`.green);
+        return blockNumber;
+    } catch (error) {
+        console.error("[Monitor Ankr] ERROR CRÍTICO: No se pudo obtener el bloque actual desde Ankr.".red.bold, error);
+        return null;
+    }
+}
+
+// --- EL NUEVO Y POTENTE MOTOR DE ESCANEO ---
+async function scanBscBlockRange(wallet, startBlock, endBlock) {
+    try {
+        console.log(`[Monitor Ankr] Escaneando ${wallet.address} de ${startBlock} a ${endBlock}`.cyan);
+
+        // Se utiliza el método RPC avanzado de Ankr para obtener TODAS las transacciones de una dirección.
+        const response = await ankrProvider.send("ankr_getTransactionsByAddress", [{
+            address: wallet.address,
+            fromBlock: startBlock,
+            toBlock: endBlock,
+            blockchain: "bsc",
+            withLogs: true // Incluimos logs para una detección de tokens 100% fiable
+        }]);
+        
+        const transactions = response.transactions;
+        if (transactions.length > 0) {
+            console.log(`[Monitor Ankr] Ankr reportó ${transactions.length} transacciones para ${wallet.address}. Procesando...`.green.bold);
+        }
+
+        for (const tx of transactions) {
+            // Detección de depósitos de Tokens (USDT BEP20)
+            for (const log of tx.logs) {
+                // Un log de transferencia de token ERC20 tiene 3 tópicos: [Firma_Del_Evento, From, To]
+                if (log.address.toLowerCase() === USDT_CONTRACT_BSC && log.topics.length === 3 && log.topics[0].toLowerCase() === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef') {
+                    const toAddress = ethers.utils.getAddress('0x' + log.topics[2].substring(26));
+                    if (toAddress.toLowerCase() === wallet.address.toLowerCase()) {
+                        const amount = parseFloat(ethers.utils.formatUnits(log.data, 18)); // USDT tiene 18 decimales
+                        await processDeposit(tx, wallet, amount, 'USDT', tx.hash, parseInt(tx.blockNumber, 16));
+                    }
+                }
+            }
+        }
+        return true; // El escaneo fue exitoso
+    } catch (error) {
+        // Añadimos más detalle al log de error para un mejor diagnóstico futuro.
+        console.error(`[Monitor Ankr] EXCEPCIÓN CRÍTICA al escanear wallet ${wallet.address} en rango ${startBlock}-${endBlock}: ${error.message}`.red.bold);
+        if (error.body) console.error("[Monitor Ankr] Error Body:", error.body);
+        return false; // El escaneo falló
+    }
+}
+// --- FIN DEL NUEVO MOTOR ---
+
+async function checkBscTransactions() {
+    console.log("[Monitor Ankr] Iniciando ciclo de escaneo STATEFUL para BSC.");
+    const wallets = await CryptoWallet.find({ chain: 'BSC' });
+    if (wallets.length === 0) { return; }
+    
+    const currentNetworkBlock = await getCurrentBscBlock();
+    if (!currentNetworkBlock) { console.error("[Monitor Ankr] No se pudo obtener el bloque actual. Saltando ciclo."); return; }
+    
+    console.log(`[Monitor Ankr] Encontradas ${wallets.length} wallets. Bloque de red actual: ${currentNetworkBlock}`);
+    
+    for (const wallet of wallets) {
+        let lastScanned = wallet.lastScannedBlock || (currentNetworkBlock - 1); // Empezar desde el bloque anterior si no hay registro
+        let fromBlock = lastScanned + 1;
+        
+        if (fromBlock > currentNetworkBlock) {
+            continue; // Ya está al día
+        }
+
+        const toBlock = currentNetworkBlock;
+        console.log(`[Monitor Ankr] Preparando escaneo para ${wallet.address}. Rango: ${fromBlock} -> ${toBlock}`);
+        const scanSuccessful = await scanBscBlockRange(wallet, fromBlock, toBlock);
+        
+        if (scanSuccessful) {
+            await CryptoWallet.findByIdAndUpdate(wallet._id, { lastScannedBlock: toBlock });
+            console.log(`[Monitor Ankr] Punto de control actualizado para ${wallet.address} a bloque ${toBlock}`.green);
+        } else {
+            console.warn(`[Monitor Ankr] Escaneo fallido para ${wallet.address} en el rango ${fromBlock}-${toBlock}. Se reintentará en el próximo ciclo.`.yellow.bold);
+        }
+        await sleep(250); // Pausa corta entre billeteras para ser amigable con la API de Ankr
+    }
+}
+
+const startMonitoring = () => {
+    console.log('✅ Iniciando servicio de monitoreo de transacciones (Ankr)...'.bold);
+    const runChecks = async () => {
+        console.log("--- [Monitor] Iniciando ciclo de monitoreo ---".gray);
+        await checkBscTransactions();
+        console.log("--- [Monitor] Ciclo de monitoreo finalizado. Esperando al siguiente. ---".gray);
+    };
+    runChecks();
+    // Ejecutar cada 60 segundos
+    setInterval(runChecks, 60000); 
+};
 
 module.exports = { startMonitoring };
