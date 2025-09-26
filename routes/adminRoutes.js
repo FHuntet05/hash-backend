@@ -1,4 +1,4 @@
-// RUTA: backend/routes/adminRoutes.js (v40.0 - CON PROTECCIÓN SUPER ADMIN)
+// RUTA: backend/routes/adminRoutes.js (v41.0 - SEMÁNTICA "MINER" INTEGRADA)
 
 const express = require('express');
 const router = express.Router();
@@ -21,10 +21,12 @@ const {
     sweepGas,
     analyzeGasNeeds,
     dispatchGas,
-    getAllFactories,
-    createFactory,
-    updateFactory,
-    deleteFactory,
+    // --- INICIO DE CAMBIO CRÍTICO: Se importan los nuevos nombres de funciones ---
+    getAllMiners,
+    createMiner,
+    updateMiner,
+    deleteMiner,
+    // --- FIN DE CAMBIO CRÍTICO ---
     generateTwoFactorSecret,
     verifyAndEnableTwoFactor,
     sendBroadcastNotification,
@@ -55,7 +57,7 @@ router.post('/admins/reset-password', protect, isAdmin, isSuperAdmin, resetAdmin
 
 // Rutas de Gestión de Transacciones y Retiros
 router.get('/transactions', protect, isAdmin, getAllTransactions);
-router.post('/transactions/manual', protect, isAdmin, createManualTransaction);
+router.post('/transactions/manual', protect, isAdmin, createManualTransaction); // Aunque obsoleta, se mantiene la ruta.
 router.get('/withdrawals/pending', protect, isAdmin, getPendingWithdrawals);
 router.put('/withdrawals/:id/process', protect, isAdmin, processWithdrawal);
 
@@ -67,9 +69,12 @@ router.post('/sweep-gas', protect, isAdmin, sweepGas);
 router.get('/gas-dispenser/analyze', protect, isAdmin, analyzeGasNeeds);
 router.post('/gas-dispenser/dispatch', protect, isAdmin, dispatchGas);
 
-// Rutas de Gestión de Fábricas
-router.route('/factories').get(protect, isAdmin, getAllFactories).post(protect, isAdmin, createFactory);
-router.route('/factories/:id').put(protect, isAdmin, updateFactory).delete(protect, isAdmin, deleteFactory);
+// --- INICIO DE REFACTORIZACIÓN: Rutas de Gestión de Mineros ---
+// La ruta base ahora es '/miners' en lugar de '/factories'.
+// Apuntan a los nuevos controladores renombrados.
+router.route('/miners').get(protect, isAdmin, getAllMiners).post(protect, isAdmin, createMiner);
+router.route('/miners/:id').put(protect, isAdmin, updateMiner).delete(protect, isAdmin, deleteMiner);
+// --- FIN DE REFACTORIZACIÓN ---
 
 // Rutas de 2FA
 router.post('/2fa/generate', protect, isAdmin, generateTwoFactorSecret);

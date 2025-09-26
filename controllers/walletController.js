@@ -1,15 +1,19 @@
-// RUTA: backend/controllers/walletController.js (v3.3 - NOTIFICACIÓN DE BLOQUEO UNIFICADA)
+// RUTA: backend/controllers/walletController.js (v4.0 - SEMÁNTICA "MINER" INTEGRADA)
 
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
-const Factory = require('../models/factoryModel');
+const Miner = require('../models/minerModel'); // CAMBIO CRÍTICO: Referencia actualizada de 'Factory' a 'Miner'.
 const Setting = require('../models/settingsModel');
 const { ethers } = require('ethers');
-const { processMultiLevelCommissions } = require('../services/referralService');
+const { processMultiLevelCommissions } = require('../services/referralService'); // Asumiendo que este servicio existe o existirá.
 const { getOrCreateUserBscWallet } = require('./paymentController');
 
-const FACTORY_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
+// Se actualiza el nombre de la constante para mayor claridad.
+const MINER_CYCLE_DURATION_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Crea o recupera una dirección de depósito única para el usuario.
+ */
 const createDepositAddress = async (req, res) => {
     const userId = req.user.id;
     try {
@@ -25,15 +29,19 @@ const createDepositAddress = async (req, res) => {
     }
 };
 
+/**
+ * Procesa la compra de un minero utilizando el saldo del usuario.
+ * NOTA: Esta función se renombrará semánticamente a "purchaseMinerWithBalance" cuando se refactoricen las rutas.
+ */
 const purchaseFactoryWithBalance = async (req, res) => {
-    const { factoryId, quantity = 1 } = req.body;
+    const { factoryId, quantity = 1 } = req.body; // El frontend aún podría enviar 'factoryId', lo manejamos.
     const userId = req.user.id;
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
-        const factory = await Factory.findById(factoryId).session(session).lean();
-        if (!factory) {
-            throw new Error('La fábrica seleccionada no existe.');
+        const miner = await Miner.findById(factoryId).session(session).lean(); // CAMBIO: Usa el modelo 'Miner'.
+        if (!miner) {
+            throw new Error('El minero seleccionado no existe.');
         }
 
         const user = await User.findById(userId).session(session);
@@ -41,89 +49,94 @@ const purchaseFactoryWithBalance = async (req, res) => {
             throw new Error('Usuario no encontrado.');
         }
 
-        const totalCost = factory.price * quantity;
+        const totalCost = miner.price * quantity;
         if (user.balance.usdt < totalCost) {
             return res.status(400).json({ message: 'Saldo USDT insuficiente.' });
         }
         
-        const shouldTriggerCommission = !factory.isFree && !user.hasTriggeredReferralCommission;
+        const shouldTriggerCommission = !miner.isFree && !user.hasTriggeredReferralCommission;
         if (shouldTriggerCommission) {
-            await processMultiLevelCommissions(user, session);
+            // Lógica de comisiones se mantiene, podría necesitar revisión para comisiones porcentuales.
+            await processMultiLevelCommissions(user, session); 
             user.hasTriggeredReferralCommission = true;
         }
 
         user.balance.usdt -= totalCost;
         
-        // Si el usuario estaba forzado a comprar, esta compra levanta la restricción.
         if (user.mustPurchaseToWithdraw) {
             user.mustPurchaseToWithdraw = false;
         }
 
         const now = new Date();
         for (let i = 0; i < quantity; i++) {
-            user.purchasedFactories.push({ 
-                factory: factory._id, 
+            user.purchasedMiners.push({ // CAMBIO CRÍTICO: Usa el array 'purchasedMiners'.
+                miner: miner._id, // CAMBIO CRÍTICO: Usa el campo 'miner'.
                 purchaseDate: now, 
-                expiryDate: new Date(now.getTime() + factory.durationDays * 24 * 60 * 60 * 1000),
+                expiryDate: new Date(now.getTime() + miner.durationDays * 24 * 60 * 60 * 1000),
                 lastClaim: now
             });
         }
         
         user.transactions.push({
             type: 'purchase',
-            amount: totalCost,
+            amount: -totalCost, // El monto de la compra es negativo para el saldo.
             currency: 'USDT',
-            description: `Compra de ${quantity}x ${factory.name}`,
+            description: `Compra de ${quantity}x Minero ${miner.name}`, // CAMBIO: Mensaje actualizado.
             status: 'completed',
-            metadata: { factoryId }
+            metadata: { minerId: miner._id } // CAMBIO: Metadata actualizada.
         });
 
         await user.save({ session });
         await session.commitTransaction();
 
-        const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
-        res.status(200).json({ message: `¡Compra de ${quantity}x ${factory.name} exitosa!`, user: updatedUser.toObject() });
+        // Se devuelve el usuario actualizado con los nuevos mineros.
+        const updatedUser = await User.findById(userId).populate('purchasedMiners.miner');
+        res.status(200).json({ message: `¡Compra de ${quantity}x ${miner.name} exitosa!`, user: updatedUser.toObject() });
     } catch (error) {
         await session.abortTransaction();
-        console.error('Error en purchaseFactoryWithBalance:', error);
+        console.error('Error en la compra de minero:', error);
         res.status(500).json({ message: error.message || 'Error al procesar la compra.' });
     } finally {
         session.endSession();
     }
 };
 
+/**
+ * Reclama la producción de un minero específico.
+ * NOTA: Renombrar a "claimMinerProduction" cuando se refactoricen las rutas.
+ */
 const claimFactoryProduction = async (req, res) => {
-    const { purchasedFactoryId } = req.body;
+    const { purchasedFactoryId } = req.body; // El frontend aún envía 'purchasedFactoryId'.
     const userId = req.user.id;
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
-        const user = await User.findById(userId).populate('purchasedFactories.factory').session(session);
+        const user = await User.findById(userId).populate('purchasedMiners.miner').session(session); // CAMBIO: Populate actualizado.
         if (!user) {
             throw new Error('Usuario no encontrado.');
         }
 
-        const factoryInstance = user.purchasedFactories.id(purchasedFactoryId);
-        if (!factoryInstance) {
-            throw new Error('Fábrica no encontrada.');
+        const minerInstance = user.purchasedMiners.id(purchasedFactoryId); // CAMBIO: Busca en 'purchasedMiners'.
+        if (!minerInstance) {
+            throw new Error('Instancia de minero no encontrada.');
         }
 
         const now = new Date();
-        if (now.getTime() - new Date(factoryInstance.lastClaim).getTime() < FACTORY_CYCLE_DURATION_MS) {
+        if (now.getTime() - new Date(minerInstance.lastClaim).getTime() < MINER_CYCLE_DURATION_MS) {
             return res.status(400).json({ message: 'El ciclo de producción de 24 horas aún no ha terminado.' });
         }
 
-        const production = factoryInstance.factory.dailyProduction;
+        const production = minerInstance.miner.dailyProduction; // CAMBIO: Accede a través de 'miner'.
         user.balance.usdt += production;
-        factoryInstance.lastClaim = now;
+        minerInstance.lastClaim = now;
         
         user.transactions.push({
             type: 'production_claim',
             amount: production,
             currency: 'USDT',
-            description: `Reclamo de producción de ${factoryInstance.factory.name}`,
+            description: `Reclamo de producción de ${minerInstance.miner.name}`, // CAMBIO: Mensaje actualizado.
             status: 'completed',
-            metadata: { purchasedFactoryId }
+            metadata: { purchasedMinerId: purchasedFactoryId } // CAMBIO: Metadata actualizada.
         });
         
         await user.save({ session });
@@ -139,6 +152,9 @@ const claimFactoryProduction = async (req, res) => {
     }
 };
 
+/**
+ * Procesa una solicitud de retiro del usuario.
+ */
 const requestWithdrawal = async (req, res) => {
   const { amount, walletAddress, withdrawalPassword } = req.body;
   const userId = req.user.id;
@@ -146,41 +162,35 @@ const requestWithdrawal = async (req, res) => {
   try {
     session.startTransaction();
 
-    const settings = await Setting.findOne({ _id: 'global_settings' }).session(session); // Usar _id para mayor precisión
+    const settings = await Setting.findOne({ _id: 'global_settings' }).session(session);
     if (!settings) {
         throw new Error('La configuración del sistema no está disponible.');
     }
     
-    // Se popula 'factory' para poder acceder a 'isFree'
+    // Se popula el nuevo campo/referencia.
     const user = await User.findById(userId)
         .select('+withdrawalPassword +isWithdrawalPasswordSet')
-        .populate('purchasedFactories.factory')
+        .populate('purchasedMiners.miner') // CAMBIO: Populate actualizado.
         .session(session);
 
-    if (!user) {
-        throw new Error('Usuario no encontrado.');
-    }
+    if (!user) { throw new Error('Usuario no encontrado.'); }
 
-    // --- INICIO DE LA SECCIÓN MODIFICADA ---
-    const hasPurchasedNonFreeFactory = user.purchasedFactories.some(pf => pf.factory && !pf.factory.isFree);
-    const unifiedErrorMessage = 'Debes comprar una fábrica para poder activar o reactivar los retiros.';
+    const hasPurchasedNonFreeMiner = user.purchasedMiners.some(pm => pm.miner && !pm.miner.isFree); // CAMBIO: Lógica actualizada.
+    const unifiedErrorMessage = 'Debes comprar un minero para poder activar o reactivar los retiros.';
 
-    // Chequeo 1: Bloqueo Global
-    if (settings.forcePurchaseOnAllWithdrawals && !hasPurchasedNonFreeFactory) {
+    if (settings.forcePurchaseOnAllWithdrawals && !hasPurchasedNonFreeMiner) {
       return res.status(403).json({ message: unifiedErrorMessage });
     }
 
-    // Chequeo 2: Bloqueo Individual
-    // Se cambió el mensaje para ser idéntico al global, creando una experiencia unificada.
-    if (user.mustPurchaseToWithdraw && !hasPurchasedNonFreeFactory) {
+    if (user.mustPurchaseToWithdraw && !hasPurchasedNonFreeMiner) {
       return res.status(403).json({ message: unifiedErrorMessage });
     }
-    // --- FIN DE LA SECCIÓN MODIFICADA ---
 
     if (!settings.withdrawalsEnabled) {
       return res.status(403).json({ message: 'Los retiros están deshabilitados temporalmente por mantenimiento.' });
     }
 
+    // A partir de aquí, la lógica no depende de "Fábricas" vs "Mineros".
     if (!user.isWithdrawalPasswordSet) {
         return res.status(403).json({ message: 'Debes configurar una contraseña de retiro primero.' });
     }
@@ -196,7 +206,6 @@ const requestWithdrawal = async (req, res) => {
     if (isNaN(numericAmount) || numericAmount <= 0) {
         return res.status(400).json({ message: 'El monto del retiro no es válido.' });
     }
-    // Corregido: 'minimumWithdrawal' a 'minWithdrawal' para coincidir con el modelo.
     if (numericAmount < settings.minWithdrawal) {
         return res.status(400).json({ message: `El retiro mínimo es ${settings.minWithdrawal} USDT.` });
     }
@@ -224,7 +233,7 @@ const requestWithdrawal = async (req, res) => {
     await user.save({ session });
     await session.commitTransaction();
 
-    const updatedUser = await User.findById(userId).populate('purchasedFactories.factory');
+    const updatedUser = await User.findById(userId).populate('purchasedMiners.miner');
     res.status(201).json({ message: 'Tu solicitud de retiro ha sido enviada con éxito.', user: updatedUser.toObject() });
   } catch (error) {
     await session.abortTransaction();
@@ -235,6 +244,9 @@ const requestWithdrawal = async (req, res) => {
   }
 };
 
+/**
+ * Obtiene el historial de transacciones del usuario.
+ */
 const getHistory = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('transactions');

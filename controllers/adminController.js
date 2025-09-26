@@ -1,7 +1,7 @@
-// RUTA: backend/controllers/adminController.js (v48.0 - IMPLEMENTACIÓN COMPLETA DE FUNCIONES)
+// RUTA: backend/controllers/adminController.js (v49.0 - SEMÁNTICA "MINER" INTEGRADA)
 
 const User = require('../models/userModel');
-const Factory = require('../models/factoryModel');
+const Miner = require('../models/minerModel'); // CAMBIO CRÍTICO: Importación de Miner en lugar de Factory.
 const Setting = require('../models/settingsModel');
 const CryptoWallet = require('../models/cryptoWalletModel');
 const mongoose = require('mongoose');
@@ -15,14 +15,14 @@ const gasEstimatorService = require('../services/gasEstimatorService');
 const { ethers } = require('ethers');
 const PendingTx = require('../models/pendingTxModel');
 const qrCodeToDataURLPromise = require('util').promisify(QRCode.toDataURL);
-const crypto = require('crypto'); // Para generar contraseñas seguras
+const crypto = require('crypto');
 
+// --- Las constantes y funciones auxiliares no requieren cambios semánticos ---
 const PLACEHOLDER_AVATAR_URL = 'https://i.postimg.cc/mD21B6r7/user-avatar-placeholder.png';
 const USDT_BSC_ADDRESS = '0x55d398326f99059fF775485246999027B3197955';
 const USDT_ABI = ['function balanceOf(address) view returns (uint256)'];
 const GAS_SUFFICIENT_TOLERANCE = 0.000000001;
 
-// ... [Funciones auxiliares y operativas ya existentes (sin cambios)...]
 function promiseWithTimeout(promise, ms, timeoutMessage = 'Operación excedió el tiempo de espera.') { const timeout = new Promise((_, reject) => { const id = setTimeout(() => { clearTimeout(id); reject(new Error(timeoutMessage)); }, ms); }); return Promise.race([promise, timeout]); }
 async function _getBalancesForAddress(address, chain) { if (chain !== 'BSC') { throw new Error(`Cadena no soportada: ${chain}. Solo se procesa BSC.`); } try { const bscProvider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/'); const usdtBscContract = new ethers.Contract(USDT_BSC_ADDRESS, USDT_ABI, bscProvider); const [usdtBalanceRaw, bnbBalanceRaw] = await Promise.all([ promiseWithTimeout(usdtBscContract.balanceOf(address), 15000), promiseWithTimeout(bscProvider.getBalance(address), 15000) ]); return { usdt: parseFloat(ethers.utils.formatUnits(usdtBalanceRaw, 18)), bnb: parseFloat(ethers.utils.formatEther(bnbBalanceRaw)) }; } catch (error) { console.error(`Error al obtener saldo para ${address} en ${chain}:`, error); throw new Error(`Fallo al escanear ${address}. Causa: ${error.message}`); } }
 const getDashboardStats = asyncHandler(async (req, res) => { const totalDepositVolumePromise = User.aggregate([ { $unwind: '$transactions' }, { $match: { 'transactions.type': 'deposit' } }, { $group: { _id: null, total: { $sum: '$transactions.amount' } } } ]); const userGrowthDataPromise = User.aggregate([ { $match: { createdAt: { $gte: new Date(new Date().setDate(new Date().getDate() - 14)) } } }, { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 } } }, { $sort: { _id: 1 } } ]).then(data => data.map(item => ({ date: item._id, NuevosUsuarios: item.count }))); const totalUsersPromise = User.countDocuments(); const pendingWithdrawalsPromise = User.aggregate([ { $unwind: '$transactions' }, { $match: { 'transactions.type': 'withdrawal', 'transactions.status': 'pending' } }, { $count: 'total' } ]); const centralWalletBalancesPromise = (async () => { try { const { bscWallet } = transactionService.getCentralWallets(); const balances = await _getBalancesForAddress(bscWallet.address, 'BSC'); return { usdt: balances.usdt, bnb: balances.bnb }; } catch (error) { console.error("Error al obtener balance de billetera central:", error); return { usdt: 0, bnb: 0 }; } })(); const [ totalUsers, totalDepositVolumeResult, pendingWithdrawalsResult, centralWalletBalances, userGrowthData ] = await Promise.all([ totalUsersPromise, totalDepositVolumePromise, pendingWithdrawalsPromise, centralWalletBalancesPromise, userGrowthDataPromise ]); const totalDepositVolume = totalDepositVolumeResult.length > 0 ? totalDepositVolumeResult[0].total : 0; const pendingWithdrawals = pendingWithdrawalsResult.length > 0 ? pendingWithdrawalsResult[0].total : 0; res.json({ totalUsers, totalDepositVolume, pendingWithdrawals, centralWalletBalances, userGrowthData }); });
@@ -36,10 +36,6 @@ const getAllUsers = asyncHandler(async (req, res) => { const pageSize = 10; cons
 const updateUser = asyncHandler(async (req, res) => { const { username, password, balanceUsdt, mustPurchaseToWithdraw, isBanned, status, role } = req.body; const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } user.username = username ?? user.username; user.balance.usdt = balanceUsdt ?? user.balance.usdt; user.status = status ?? user.status; user.role = role ?? user.role; if (mustPurchaseToWithdraw !== undefined) { user.mustPurchaseToWithdraw = mustPurchaseToWithdraw; } if (isBanned !== undefined) { user.isBanned = isBanned; user.status = isBanned ? 'banned' : 'active'; } if (password) { user.password = password; } const updatedUser = await user.save(); res.json(updatedUser); });
 const setUserStatus = asyncHandler(async (req, res) => { const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user._id.equals(req.user._id)) { res.status(400); throw new Error('No puedes cambiar tu propio estado.'); } user.status = req.body.status; const updatedUser = await user.save(); res.json(updatedUser); });
 const createManualTransaction = asyncHandler(async (req, res) => { res.status(501).json({ message: 'Funcionalidad obsoleta y deshabilitada.' }); });
-const getAllFactories = asyncHandler(async (req, res) => { const factories = await Factory.find({}).sort({ vipLevel: 1 }).lean(); res.json(factories); });
-const createFactory = asyncHandler(async (req, res) => { const newFactory = await Factory.create(req.body); res.status(201).json(newFactory); });
-const updateFactory = asyncHandler(async (req, res) => { const factory = await Factory.findByIdAndUpdate(req.params.id, req.body, { new: true }); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); res.json(factory); });
-const deleteFactory = asyncHandler(async (req, res) => { const factory = await Factory.findById(req.params.id); if (!factory) return res.status(404).json({ message: 'Fábrica no encontrada.' }); await factory.deleteOne(); res.json({ message: 'Fábrica eliminada.' }); });
 const getSettings = asyncHandler(async (req, res) => { const settings = await Setting.getSettings(); res.json(settings); });
 const updateSettings = asyncHandler(async (req, res) => { const { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 } = req.body; const settingsToUpdate = { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 }; const updatedSettings = await Setting.findByIdAndUpdate( 'global_settings', settingsToUpdate, { new: true, upsert: true, runValidators: true } ); res.json(updatedSettings); });
 const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `MegaFabrica Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
@@ -49,145 +45,58 @@ const getTreasuryWalletsList = asyncHandler(async (req, res) => { const page = p
 const analyzeGasNeeds = asyncHandler(async (req, res) => { const page = parseInt(req.query.page) || 1; const limit = parseInt(req.query.limit) || 15; const chain = 'BSC'; const { bscWallet } = transactionService.getCentralWallets(); const centralAddress = bscWallet.address; const [totalWalletsInChain, balanceRaw] = await Promise.all([ CryptoWallet.countDocuments({ chain }), new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/').getBalance(centralAddress) ]).catch(err => { console.error("Fallo al obtener datos iniciales (Dispensador):", err); throw new Error("Error de red al contactar nodo Blockchain."); }); const centralWalletBalance = parseFloat(ethers.utils.formatEther(balanceRaw)); const walletsOnPage = await CryptoWallet.find({ chain }).populate('user', 'username').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(); const walletsNeedingGasPromises = walletsOnPage.map(async (wallet) => { try { const balances = await _getBalancesForAddress(wallet.address, chain); if (!balances || balances.usdt <= 0.000001) return null; const requiredGas = await gasEstimatorService.estimateBscSweepCost(wallet.address, balances.usdt); const gasBalance = balances.bnb; if (gasBalance < requiredGas - GAS_SUFFICIENT_TOLERANCE) { return { address: wallet.address, user: wallet.user, usdtBalance: balances.usdt, gasBalance, requiredGas }; } return null; } catch (error) { console.error(`Error analizando gas para wallet ${wallet.address}: ${error.message}`); return null; } }); const filteredWallets = (await Promise.all(walletsNeedingGasPromises)).filter(Boolean); res.json({ centralWalletBalance, wallets: filteredWallets, pagination: { currentPage: page, totalPages: Math.ceil(totalWalletsInChain / limit), totalWallets: totalWalletsInChain } }); });
 const dispatchGas = asyncHandler(async (req, res) => { const { chain, targets } = req.body; if (chain !== 'BSC') { res.status(400); throw new Error("Petición inválida. Solo se soporta BSC."); } if (!Array.isArray(targets) || targets.length === 0) { res.status(400); throw new Error("Petición inválida, se requiere un array de 'targets'."); } const report = { summary: { success: 0, failed: 0, totalDispatched: 0 }, details: [] }; for (const target of targets) { try { const txHash = await transactionService.sendBscGas(target.address, target.amount); report.summary.success++; report.summary.totalDispatched += parseFloat(target.amount); report.details.push({ address: target.address, status: 'SUCCESS', txHash, amount: target.amount }); } catch (error) { report.summary.failed++; report.details.push({ address: target.address, status: 'FAILED', reason: error.message, amount: target.amount }); } } res.json(report); });
 const sendBroadcastNotification = asyncHandler(async (req, res) => { const { message, target, imageUrl, buttons } = req.body; if (!message || !target) { res.status(400); throw new Error("Mensaje y público objetivo son requeridos."); } let usersToNotify = []; if (target.type === 'all') { usersToNotify = await User.find({ status: 'active' }).select('telegramId').lean(); } else if (target.type === 'id' && target.value) { const user = await User.findOne({ telegramId: target.value }).select('telegramId').lean(); if (user) usersToNotify.push(user); } if (usersToNotify.length === 0) { return res.json({ message: "No se encontraron usuarios para notificar." }); } res.status(202).json({ message: `Enviando notificación a ${usersToNotify.length} usuarios. Este proceso puede tardar.` }); (async () => { let successCount = 0; for (const user of usersToNotify) { const result = await sendTelegramMessage(user.telegramId, message, { imageUrl, buttons }); if(result.success) successCount++; await new Promise(resolve => setTimeout(resolve, 100)); } console.log(`[Broadcast] Notificación completada. ${successCount}/${usersToNotify.length} envíos exitosos.`); })(); });
+const sweepFunds = asyncHandler(async (req, res) => { console.log('[Sweep] Solicitud de barrido de fondos recibida.'); const { walletsToSweep, recipientAddress } = req.body; if (!walletsToSweep || !Array.isArray(walletsToSweep) || walletsToSweep.length === 0 || !recipientAddress) { res.status(400); throw new Error("Parámetros de barrido inválidos. Se requiere 'walletsToSweep' (array) y 'recipientAddress'."); } const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: 'BSC' }).lean(); if (wallets.length === 0) { return res.json({ message: "Ninguna de las wallets candidatas fue encontrada en la base de datos para barrido.", summary: {}, details: [] }); } const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedSweeps: 0 }, details: [] }; for (const wallet of wallets) { try { const txHash = await transactionService.sweepUsdtOnBscFromDerivedWallet(wallet.derivationIndex, recipientAddress); report.summary.successfulSweeps++; report.details.push({ address: wallet.address, status: 'SUCCESS', txHash }); console.log(`[Sweep] Éxito en barrido de ${wallet.address}. Hash: ${txHash}`); } catch (error) { report.summary.failedSweeps++; report.details.push({ address: wallet.address, status: 'FAILED', reason: error.message }); console.error(`[Sweep] Fallo en barrido de ${wallet.address}: ${error.message}`); } } res.json(report); });
+const sweepGas = asyncHandler(async (req, res) => { console.log('[SweepGas] Solicitud de barrido de gas (BNB) recibida.'); const { walletsToSweep, recipientAddress } = req.body; if (!walletsToSweep || !Array.isArray(walletsToSweep) || walletsToSweep.length === 0 || !recipientAddress) { res.status(400); throw new Error("Parámetros de barrido inválidos. Se requiere 'walletsToSweep' (array) y 'recipientAddress'."); } const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: 'BSC' }).lean(); if (wallets.length === 0) { return res.json({ message: "Ninguna de las wallets candidatas fue encontrada en la base de datos para barrido de gas.", summary: {}, details: [] }); } const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedSweeps: 0 }, details: [] }; for (const wallet of wallets) { try { const txHash = await transactionService.sweepBnbFromDerivedWallet(wallet.derivationIndex, recipientAddress); report.summary.successfulSweeps++; report.details.push({ address: wallet.address, status: 'SUCCESS', txHash }); console.log(`[SweepGas] Éxito en barrido de gas de ${wallet.address}. Hash: ${txHash}`); } catch (error) { report.summary.failedSweeps++; report.details.push({ address: wallet.address, status: 'FAILED', reason: error.message }); console.error(`[SweepGas] Fallo en barrido de gas de ${wallet.address}: ${error.message}`); } } res.json(report); });
+const cancelTransaction = asyncHandler(async (req, res) => { res.status(501).json({ message: 'Funcionalidad de cancelación aún en desarrollo.' }); });
+const speedUpTransaction = asyncHandler(async (req, res) => { res.status(501).json({ message: 'Funcionalidad de aceleración aún en desarrollo.' }); });
+const promoteUserToAdmin = asyncHandler(async (req, res) => { const { userId } = req.body; if (!userId) { res.status(400); throw new Error('Se requiere el ID del usuario.'); } const user = await User.findById(userId); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user.role === 'admin') { return res.status(400).json({ message: 'El usuario ya es un administrador.' }); } user.role = 'admin'; await user.save(); console.log(`[AdminMgmt] Usuario ${user.username} (ID: ${userId}) promovido a administrador por ${req.user.username}.`); res.json({ message: `El usuario ${user.username} ha sido promovido a administrador.` }); });
+const resetAdminPassword = asyncHandler(async (req, res) => { const { adminId } = req.body; if (!adminId) { res.status(400); throw new Error('Se requiere el ID del administrador.'); } const admin = await User.findById(adminId); if (!admin || admin.role !== 'admin') { res.status(404); throw new Error('Administrador no encontrado.'); } const temporaryPassword = crypto.randomBytes(8).toString('hex'); admin.password = temporaryPassword; await admin.save(); console.log(`[AdminMgmt] Contraseña del admin ${admin.username} (ID: ${adminId}) reseteada por ${req.user.username}.`); res.json({ message: `Contraseña reseteada exitosamente para ${admin.username}.`, temporaryPassword: temporaryPassword }); });
+const demoteAdminToUser = asyncHandler(async (req, res) => { const { adminId } = req.body; if (!adminId) { res.status(400); throw new Error('Se requiere el ID del administrador.'); } if (req.user.id === adminId) { res.status(400); throw new Error('No puedes degradarte a ti mismo.'); } const admin = await User.findById(adminId); if (!admin) { res.status(404); throw new Error('Administrador no encontrado.'); } if (admin.role !== 'admin') { return res.status(400).json({ message: 'La cuenta seleccionada no es un administrador.' }); } admin.role = 'user'; await admin.save(); console.log(`[AdminMgmt] Administrador ${admin.username} (ID: ${adminId}) degradado a usuario por ${req.user.username}.`); res.json({ message: `El administrador ${admin.username} ha sido degradado a usuario.` }); });
 
-// --- INICIO DE IMPLEMENTACIÓN DE FUNCIONES FALTANTES ---
+// --- REFACTORIZACIÓN SEMÁNTICA: Las funciones de "fábricas" se renombran a "mineros". ---
+// Esta sección reemplaza las funciones antiguas de 'Factory'.
 
-const sweepFunds = asyncHandler(async (req, res) => {
-    console.log('[Sweep] Solicitud de barrido de fondos recibida.');
-    const { walletsToSweep, recipientAddress } = req.body;
-    if (!walletsToSweep || !Array.isArray(walletsToSweep) || walletsToSweep.length === 0 || !recipientAddress) {
-        res.status(400); throw new Error("Parámetros de barrido inválidos. Se requiere 'walletsToSweep' (array) y 'recipientAddress'.");
-    }
-
-    const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: 'BSC' }).lean();
-    if (wallets.length === 0) {
-        return res.json({ message: "Ninguna de las wallets candidatas fue encontrada en la base de datos para barrido.", summary: {}, details: [] });
-    }
-
-    const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedSweeps: 0 }, details: [] };
-    for (const wallet of wallets) {
-        try {
-            const txHash = await transactionService.sweepUsdtOnBscFromDerivedWallet(wallet.derivationIndex, recipientAddress);
-            report.summary.successfulSweeps++;
-            report.details.push({ address: wallet.address, status: 'SUCCESS', txHash });
-            console.log(`[Sweep] Éxito en barrido de ${wallet.address}. Hash: ${txHash}`);
-        } catch (error) {
-            report.summary.failedSweeps++;
-            report.details.push({ address: wallet.address, status: 'FAILED', reason: error.message });
-            console.error(`[Sweep] Fallo en barrido de ${wallet.address}: ${error.message}`);
-        }
-    }
-    res.json(report);
+const getAllMiners = asyncHandler(async (req, res) => {
+    const miners = await Miner.find({}).sort({ vipLevel: 1 }).lean();
+    res.json(miners);
 });
 
-const sweepGas = asyncHandler(async (req, res) => {
-    console.log('[SweepGas] Solicitud de barrido de gas (BNB) recibida.');
-    const { walletsToSweep, recipientAddress } = req.body;
-    if (!walletsToSweep || !Array.isArray(walletsToSweep) || walletsToSweep.length === 0 || !recipientAddress) {
-        res.status(400); throw new Error("Parámetros de barrido inválidos. Se requiere 'walletsToSweep' (array) y 'recipientAddress'.");
-    }
-
-    const wallets = await CryptoWallet.find({ address: { $in: walletsToSweep }, chain: 'BSC' }).lean();
-    if (wallets.length === 0) {
-        return res.json({ message: "Ninguna de las wallets candidatas fue encontrada en la base de datos para barrido de gas.", summary: {}, details: [] });
-    }
-
-    const report = { summary: { walletsScanned: wallets.length, successfulSweeps: 0, failedSweeps: 0 }, details: [] };
-    for (const wallet of wallets) {
-        try {
-            const txHash = await transactionService.sweepBnbFromDerivedWallet(wallet.derivationIndex, recipientAddress);
-            report.summary.successfulSweeps++;
-            report.details.push({ address: wallet.address, status: 'SUCCESS', txHash });
-            console.log(`[SweepGas] Éxito en barrido de gas de ${wallet.address}. Hash: ${txHash}`);
-        } catch (error) {
-            report.summary.failedSweeps++;
-            report.details.push({ address: wallet.address, status: 'FAILED', reason: error.message });
-            console.error(`[SweepGas] Fallo en barrido de gas de ${wallet.address}: ${error.message}`);
-        }
-    }
-    res.json(report);
+const createMiner = asyncHandler(async (req, res) => {
+    const newMiner = await Miner.create(req.body);
+    res.status(201).json(newMiner);
 });
 
-const cancelTransaction = asyncHandler(async (req, res) => {
-    // NOTA ARQUITECTÓNICA: La cancelación en blockchain no es un borrado, sino una sobreescritura.
-    // Se envía una nueva transacción con el MISMO 'nonce' que la atascada, pero con un precio de gas
-    // más alto y enviando 0 ETH/BNB a uno mismo. Esto requiere un sistema de seguimiento de nonces.
-    // La implementación actual es una base que necesita infraestructura adicional.
-    res.status(501).json({ message: 'Funcionalidad de cancelación aún en desarrollo. Requiere infraestructura de seguimiento de nonces.' });
+const updateMiner = asyncHandler(async (req, res) => {
+    const miner = await Miner.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!miner) return res.status(404).json({ message: 'Minero no encontrado.' });
+    res.json(miner);
 });
 
-const speedUpTransaction = asyncHandler(async (req, res) => {
-    // NOTA ARQUITECTÓNICA: Similar a la cancelación, 'acelerar' una transacción implica reenviarla
-    // con el MISMO 'nonce' y los MISMOS datos, pero con un precio de gas significativamente más alto.
-    // Esto incentiva a los mineros/validadores a incluirla en un bloque antes.
-    res.status(501).json({ message: 'Funcionalidad de aceleración aún en desarrollo. Requiere infraestructura de seguimiento de nonces.' });
+const deleteMiner = asyncHandler(async (req, res) => {
+    const miner = await Miner.findById(req.params.id);
+    if (!miner) return res.status(404).json({ message: 'Minero no encontrado.' });
+    await miner.deleteOne(); // Se utiliza deleteOne() para compatibilidad moderna.
+    res.json({ message: 'Minero eliminado.' });
 });
+// --- FIN DE REFACTORIZACIÓN ---
 
-const promoteUserToAdmin = asyncHandler(async (req, res) => {
-    const { userId } = req.body;
-    if (!userId) { res.status(400); throw new Error('Se requiere el ID del usuario.'); }
-
-    const user = await User.findById(userId);
-    if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); }
-
-    if (user.role === 'admin') {
-        return res.status(400).json({ message: 'El usuario ya es un administrador.' });
-    }
-
-    user.role = 'admin';
-    await user.save();
-    console.log(`[AdminMgmt] Usuario ${user.username} (ID: ${userId}) promovido a administrador por ${req.user.username}.`);
-    res.json({ message: `El usuario ${user.username} ha sido promovido a administrador.` });
-});
-
-const resetAdminPassword = asyncHandler(async (req, res) => {
-    const { adminId } = req.body;
-    if (!adminId) { res.status(400); throw new Error('Se requiere el ID del administrador.'); }
-    
-    const admin = await User.findById(adminId);
-    if (!admin || admin.role !== 'admin') { res.status(404); throw new Error('Administrador no encontrado.'); }
-
-    // Generar una contraseña temporal segura
-    const temporaryPassword = crypto.randomBytes(8).toString('hex');
-    admin.password = temporaryPassword;
-    await admin.save();
-    
-    console.log(`[AdminMgmt] Contraseña del admin ${admin.username} (ID: ${adminId}) reseteada por ${req.user.username}.`);
-    
-    // IMPORTANTE: La contraseña temporal debe ser comunicada de forma segura al administrador.
-    // Devolverla en la respuesta JSON es una práctica para entornos de desarrollo.
-    // En producción, se debería enviar por un canal seguro (ej: Telegram directo al admin).
-    res.json({ message: `Contraseña reseteada exitosamente para ${admin.username}.`, temporaryPassword: temporaryPassword });
-});
-
-const demoteAdminToUser = asyncHandler(async (req, res) => {
-    const { adminId } = req.body;
-    if (!adminId) { res.status(400); throw new Error('Se requiere el ID del administrador.'); }
-    
-    if (req.user.id === adminId) {
-        res.status(400); throw new Error('No puedes degradarte a ti mismo.');
-    }
-
-    const admin = await User.findById(adminId);
-    if (!admin) { res.status(404); throw new Error('Administrador no encontrado.'); }
-    
-    if (admin.role !== 'admin') {
-        return res.status(400).json({ message: 'La cuenta seleccionada no es un administrador.' });
-    }
-
-    admin.role = 'user';
-    await admin.save();
-    console.log(`[AdminMgmt] Administrador ${admin.username} (ID: ${adminId}) degradado a usuario por ${req.user.username}.`);
-    res.json({ message: `El administrador ${admin.username} ha sido degradado a usuario.` });
-});
-
-// --- FIN DE IMPLEMENTACIÓN ---
 
 module.exports = {
   getPendingWithdrawals, processWithdrawal, getAllUsers, updateUser, setUserStatus, getDashboardStats,
-  getAllTransactions, createManualTransaction, getAllFactories, createFactory, updateFactory, deleteFactory,
+  getAllTransactions, createManualTransaction,
+  
+  // Se exportan los nuevos nombres de funciones de mineros
+  getAllMiners, createMiner, updateMiner, deleteMiner,
+  
   getUserDetails, getSettings, updateSettings, generateTwoFactorSecret, verifyAndEnableTwoFactor,
   getTreasuryWalletsList, getWalletBalance, sweepFunds, analyzeGasNeeds, dispatchGas, adjustUserBalance,
   sendBroadcastNotification, getPendingBlockchainTxs, cancelTransaction, speedUpTransaction, sweepGas,
-  promoteUserToAdmin, resetAdminPassword, demoteAdminToUser
+  promoteUserToAdmin, resetAdminPassword, demoteAdminToUser,
+
+  // Se dejan las funciones antiguas exportadas con su nombre original por si algún otro archivo las referencia
+  // temporalmente, pero estas serán eliminadas en una limpieza final.
+  getAllFactories: getAllMiners, 
+  createFactory: createMiner, 
+  updateFactory: updateMiner, 
+  deleteFactory: deleteMiner
 };

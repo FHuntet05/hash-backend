@@ -1,47 +1,47 @@
-// RUTA: backend/routes/walletRoutes.js (v1.1 - SINCRONIZADO Y ESTABLE)
+// RUTA: backend/routes/walletRoutes.js (v2.0 - SEMÁNTICA "MINER" INTEGRADA)
 
 const express = require('express');
 const router = express.Router();
 
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
-// Se importan las funciones con los nombres EXACTOS que se exportan desde walletController.js
+// Las funciones del controlador ya fueron renombradas internamente, pero aquí no cambia nada
 const { 
     createDepositAddress,
-    purchaseFactoryWithBalance, // <-- CORREGIDO
-    claimFactoryProduction,   // <-- CORREGIDO
+    purchaseFactoryWithBalance, // Mantenemos el nombre de la función por ahora
+    claimFactoryProduction,   // Mantenemos el nombre de la función por ahora
     requestWithdrawal,
     getHistory 
 } = require('../controllers/walletController');
-// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
 
 const { protect } = require('../middleware/authMiddleware');
 
-// === RUTAS PARA EL SISTEMA "MEGA FÁBRICA" ===
+// === RUTAS DEL SISTEMA v11.0 ===
 // Todas las rutas están protegidas y requieren un token de autenticación válido.
 
 // POST /api/wallet/create-deposit-address
-// Genera la información para que un usuario realice un depósito.
+// Genera la información para que un usuario realice un depósito. (Sin cambios)
 router.post('/create-deposit-address', protect, createDepositAddress);
 
-// POST /api/wallet/purchase-factory
-// Permite al usuario comprar una fábrica usando su saldo interno.
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
-router.post('/purchase-factory', protect, purchaseFactoryWithBalance); // <-- CORREGIDO
-// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
+// --- INICIO DE REFACTORIZACIÓN DE RUTA ---
+// POST /api/wallet/purchase-miner
+// Permite al usuario comprar un minero usando su saldo interno.
+router.post('/purchase-miner', protect, purchaseFactoryWithBalance);
+// --- FIN DE REFACTORIZACIÓN DE RUTA ---
 
+// --- INICIO DE REFACTORIZACIÓN DE RUTA ---
 // POST /api/wallet/claim-production
-// Permite al usuario reclamar la producción de una fábrica específica.
-// --- INICIO DE CORRECCIÓN QUIRÚRGICA ---
-router.post('/claim-production', protect, claimFactoryProduction); // <-- CORREGIDO
-// --- FIN DE CORRECCIÓN QUIRÚRGICA ---
+// Permite al usuario reclamar la producción de un minero específico.
+router.post('/claim-miner', protect, claimFactoryProduction);
+// --- FIN DE REFACTORIZACIÓN DE RUTA ---
 
 // POST /api/wallet/request-withdrawal
-// Inicia una solicitud de retiro de fondos.
+// Inicia una solicitud de retiro de fondos. (Sin cambios)
 router.post('/request-withdrawal', protect, requestWithdrawal);
 
 // GET /api/wallet/history
-// Obtiene el historial de transacciones del usuario.
+// Obtiene el historial de transacciones del usuario. (Sin cambios)
 router.get('/history', protect, getHistory);
 
+// Se eliminan las rutas antiguas '/purchase-factory' y '/claim-production'
+// para evitar duplicados y forzar la actualización del frontend.
 
 module.exports = router;

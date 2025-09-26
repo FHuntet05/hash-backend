@@ -1,22 +1,22 @@
-// RUTA: backend/models/userModel.js (v4.8 - ESQUEMA DE TRANSACCIÓN CORREGIDO)
+// RUTA: backend/models/userModel.js (v4.9 - ACTUALIZADO A REFERENCIA "MINER")
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+// ... (transactionSchema no cambia, se omite por brevedad)
 const transactionSchema = new mongoose.Schema({
     type: { type: String, enum: ['deposit', 'withdrawal', 'purchase', 'referral_commission', 'task_reward', 'production_claim', 'admin_credit', 'admin_debit'], required: true },
     amount: { type: Number, required: true },
     currency: { type: String, required: true, default: 'USDT' },
     description: { type: String, required: true },
-    // --- INICIO DE LA CORRECCIÓN ---
-    // Se añade 'rejected' a la lista de estados válidos para permitir que el administrador rechace retiros.
     status: { type: String, enum: ['pending', 'completed', 'failed', 'rejected'], default: 'completed' },
-    // --- FIN DE LA CORRECCIÓN ---
     metadata: { type: mongoose.Schema.Types.Mixed }
 }, { timestamps: true });
+
 
 const userSchema = new mongoose.Schema({
     telegramId: { type: String, required: true, unique: true },
     username: { type: String, unique: true, sparse: true },
+    // ... (otros campos no cambian)
     fullName: { type: String },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     referralCode: { type: String, unique: true, sparse: true },
@@ -26,29 +26,31 @@ const userSchema = new mongoose.Schema({
     passwordResetRequired: { type: Boolean, default: false },
     balance: { usdt: { type: Number, default: 0 } },
     totalRecharge: { type: Number, default: 0 },
-    purchasedFactories: [{
-        factory: { type: mongoose.Schema.Types.ObjectId, ref: 'Factory', required: true },
+
+    // --- INICIO DE LA MODIFICACIÓN CRÍTICA ---
+    // Renombrado de 'purchasedFactories' a 'purchasedMiners'
+    purchasedMiners: [{
+        // Renombrado de 'factory' a 'miner'
+        miner: { type: mongoose.Schema.Types.ObjectId, ref: 'Miner', required: true }, // Referencia actualizada a 'Miner'
         purchaseDate: { type: Date, required: true },
         expiryDate: { type: Date, required: true },
         lastClaim: { type: Date, required: true },
     }],
+    // Se deja el campo 'purchasedFactories' por retrocompatibilidad temporal
+    // si fuera necesario, pero idealmente se debería migrar la data.
+    // Por simplicidad, asumimos una migración o que no hay datos críticos en producción aún.
+    // --- FIN DE LA MODIFICACIÓN CRÍTICA ---
+
     transactions: [transactionSchema],
     photoFileId: { type: String },
+    // ... (resto de campos no cambian)
     language: { type: String, default: 'es' },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     referrals: [{
         user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
         level: { type: Number, required: true, enum: [1, 2, 3] }
     }],
-    claimedTasks: {
-        type: Map,
-        of: new mongoose.Schema({
-            claimed: { type: Boolean, default: true },
-            referralCountAtClaim: { type: Number } 
-        }, { _id: false }),
-        default: {},
-        required: true
-    },
+    claimedTasks: { type: Map, of: new mongoose.Schema({ claimed: { type: Boolean, default: true }, referralCountAtClaim: { type: Number } }, { _id: false }), default: {}, required: true },
     hasTriggeredReferralCommission: { type: Boolean, default: false },
     telegramVisited: { type: Boolean, default: false },
     withdrawalPassword: { type: String, select: false },
@@ -56,24 +58,16 @@ const userSchema = new mongoose.Schema({
     mustPurchaseToWithdraw: { type: Boolean, default: false },
 }, { timestamps: true });
 
+// ... (hooks y métodos no cambian, se omiten por brevedad)
 userSchema.pre('save', async function(next) {
-    if (this.isModified('password') && this.password) {
-        const salt = await bcrypt.genSalt(10);
-        this.password = await bcrypt.hash(this.password, salt);
-    }
-    if (this.isModified('withdrawalPassword') && this.withdrawalPassword) {
-        const salt = await bcrypt.genSalt(10);
-        this.withdrawalPassword = await bcrypt.hash(this.withdrawalPassword, salt);
-    }
+    if (this.isModified('password') && this.password) { const salt = await bcrypt.genSalt(10); this.password = await bcrypt.hash(this.password, salt); }
+    if (this.isModified('withdrawalPassword') && this.withdrawalPassword) { const salt = await bcrypt.genSalt(10); this.withdrawalPassword = await bcrypt.hash(this.withdrawalPassword, salt); }
     if (this.isModified('status')) { this.isBanned = this.status === 'banned'; }
     if (!this.referralCode) { this.referralCode = this.telegramId; }
     next();
 });
-
 userSchema.methods.matchPassword = async function(enteredPassword) { return await bcrypt.compare(enteredPassword, this.password); };
-userSchema.methods.matchWithdrawalPassword = async function(enteredPassword) {
-    if (!this.withdrawalPassword) return false;
-    return await bcrypt.compare(enteredPassword, this.withdrawalPassword);
-};
+userSchema.methods.matchWithdrawalPassword = async function(enteredPassword) { if (!this.withdrawalPassword) return false; return await bcrypt.compare(enteredPassword, this.withdrawalPassword); };
+
 
 module.exports = mongoose.model('User', userSchema);

@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v1.9 - CORS ROBUSTO Y ESTABILIZADO)
+// RUTA: backend/index.js (v2.0 - SEMÁNTICA "MINER" Y RUTAS INTEGRADAS)
 
 const express = require('express');
 const cors = require('cors');
@@ -9,15 +9,15 @@ const dotenv = require('dotenv');
 const colors = require('colors');
 const connectDB = require('./config/db');
 const User = require('./models/userModel');
-const Factory = require('./models/factoryModel');
+const Miner = require('./models/minerModel'); // CAMBIO CRÍTICO: Se importa Miner en lugar de Factory.
 const { startMonitoring } = require('./services/transactionMonitor.js');
 
-console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA...');
+console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA v11.0...');
 dotenv.config();
 
 function checkEnvVariables() {
     console.log('[SISTEMA] Verificando variables de entorno críticas...');
-    const requiredVars = ['MONGO_URI', 'JWT_SECRET', 'TELEGRAM_BOT_TOKEN', 'FRONTEND_URL', 'BACKEND_URL', 'BSCSCAN_API_KEY', 'MASTER_SEED_PHRASE'];
+    const requiredVars = ['MONGO_URI', 'JWT_SECRET', 'TELEGRAM_BOT_TOKEN', 'FRONTEND_URL', 'BACKEND_URL', 'ANKR_BSC_RPC_URL', 'BSCSCAN_API_KEY', 'MASTER_SEED_PHRASE'];
     const missingVars = requiredVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
         console.error(`!! ERROR FATAL: FALTAN VARIABLES DE ENTORNO: ${missingVars.join(', ')}`.red.bold);
@@ -28,7 +28,7 @@ function checkEnvVariables() {
 checkEnvVariables();
 connectDB();
 
-// --- [Importaciones de rutas sin cambios] ---
+// --- [INICIO REFACTORIZACIÓN DE IMPORTACIONES] ---
 const authRoutes = require('./routes/authRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
@@ -38,25 +38,23 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const treasuryRoutes = require('./routes/treasuryRoutes');
 const userRoutes = require('./routes/userRoutes');
-const factoryRoutes = require('./routes/factoryRoutes');
+const minerRoutes = require('./routes/minerRoutes'); // CAMBIO CRÍTICO: Se importa minerRoutes
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
+// --- [FIN REFACTORIZACIÓN DE IMPORTACIONES] ---
 
 const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 app.disable('etag');
 
-// --- INICIO DE LA MODIFICACIÓN DE CORS ---
-// Se crea una whitelist más robusta que incluye la URL de producción y URLs de desarrollo local.
 const allowedOrigins = [
-    process.env.FRONTEND_URL, // Su URL de producción desde .env
-    'http://localhost:3000',  // Para desarrollo con Create React App
-    'http://localhost:5173'   // Para desarrollo con Vite
+    process.env.FRONTEND_URL,
+    'http://localhost:3000',
+    'http://localhost:5173'
 ];
 
 const corsOptions = {
     origin: (origin, callback) => {
-        // Permitir solicitudes si el origen está en la lista o si no hay origen (ej: Postman)
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
@@ -68,16 +66,14 @@ const corsOptions = {
     credentials: true,
 };
 
-// Se aplica la configuración de CORS a TODAS las solicitudes, incluyendo las de preflight (OPTIONS).
 console.log(`[SISTEMA] Configurando CORS para permitir orígenes: ${allowedOrigins.join(', ')}`.cyan);
 app.use(cors(corsOptions));
-// --- FIN DE LA MODIFICACIÓN DE CORS ---
 
 app.use(express.json());
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-// --- [Rutas sin cambios] ---
+// --- [INICIO REFACTORIZACIÓN DE RUTAS] ---
 app.use('/api/auth', authRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);
@@ -87,23 +83,25 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/factories', factoryRoutes);
+app.use('/api/miners', minerRoutes); // CAMBIO CRÍTICO: Se registra la ruta /api/miners.
+// La ruta '/api/factories' queda eliminada.
+// --- [FIN REFACTORIZACIÓN DE RUTAS] ---
 
-// --- [Lógica del Bot de Telegram (sin cambios)] ---
+// --- [Lógica del Bot de Telegram refactorizada a "Mineros"] ---
 const WELCOME_MESSAGE = `
-🤖 ¡Bienvenido a Mega Fábrica!\n\n
-🏭 Tu centro de operaciones para la producción digital. Conecta, construye y genera ingresos pasivos en USDT.\n
-📘 ¿Cómo funciona tu imperio industrial?\n
-🔹 1. Adquiere tus Fábricas\n\n
-🏗️ Visita la tienda y compra diferentes tipos de fábricas usando USDT. Cada una tiene una producción y vida útil únicas.\n
-🔹 2. Producción Automática 24/7\n\n
-⚙️ Una vez compradas, tus fábricas empiezan a generar USDT automáticamente. ¡Incluso mientras duermes!\n
-🔹 3. Reclama tus Ganancias\n\n
-💰 Accede a tu panel y reclama la producción de tus fábricas para añadirla a tu saldo principal.\n
-🔹 4. Construye tu Red\n\n
-🤝 Invita a otros industriales con tu enlace personal. Recibirás una comisión en USDT por la primera compra de cada referido.\n
-🚀 ¿Listo para poner la primera piedra de tu imperio?
-🔘 Pulsa el botón inferior para abrir la aplicación y empezar a construir.`;
+🤖 **¡Bienvenido a Mega Minería!**\n\n
+💎 Tu centro de operaciones para la producción digital. Conecta, construye tu granja y genera ingresos pasivos en USDT.\n
+📘 **¿Cómo funciona tu operación minera?**\n
+🔹 **1. Adquiere tus Mineros**\n\n
+🛒 Visita el mercado y compra diferentes tipos de mineros usando USDT. Cada uno tiene un poder de minado y vida útil únicos.\n
+🔹 **2. Producción Automática 24/7**\n\n
+⚙️ Una vez adquiridos, tus mineros empiezan a generar USDT automáticamente. ¡Incluso mientras duermes!\n
+🔹 **3. Reclama tus Ganancias**\n\n
+💰 Accede a tu panel y reclama la producción de tus mineros para añadirla a tu saldo principal.\n
+🔹 **4. Construye tu Red**\n\n
+🤝 Invita a otros mineros con tu enlace personal. Ganarás una comisión porcentual **cada vez** que tus referidos hagan un depósito.\n
+🚀 **¿Listo para encender tu primer minero?**
+🔘 Pulsa el botón inferior para abrir la aplicación y empezar a producir.`;
 
 const handleNewUserCreation = async (ctx) => {
     const referredId = ctx.from.id.toString();
@@ -111,15 +109,15 @@ const handleNewUserCreation = async (ctx) => {
     const username = ctx.from.username || `user_${referredId}`;
     const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
 
-    const initialFactories = [];
-    const freeFactory = await Factory.findOne({ isFree: true }).lean();
-    if (freeFactory) {
+    const initialMiners = [];
+    const freeMiner = await Miner.findOne({ isFree: true }).lean(); // CAMBIO: Busca un Miner.
+    if (freeMiner) {
         const purchaseDate = new Date();
         const expiryDate = new Date(purchaseDate);
-        expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
-        initialFactories.push({ factory: freeFactory._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
+        expiryDate.setDate(expiryDate.getDate() + freeMiner.durationDays);
+        initialMiners.push({ miner: freeMiner._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
     } else {
-        console.warn('[Bot /start] ADVERTENCIA: No se encontró fábrica "isFree". El usuario será creado sin fábrica inicial.'.yellow);
+        console.warn('[Bot /start] ADVERTENCIA: No se encontró minero "isFree". El usuario será creado sin minero inicial.'.yellow);
     }
 
     const newUser = new User({ 
@@ -127,7 +125,7 @@ const handleNewUserCreation = async (ctx) => {
         username, 
         fullName: fullName || username, 
         language: ctx.from.language_code || 'es',
-        purchasedFactories: initialFactories
+        purchasedMiners: initialMiners // CAMBIO: Asigna a purchasedMiners.
     });
     
     try {
@@ -135,8 +133,7 @@ const handleNewUserCreation = async (ctx) => {
         console.log(`[Bot /start] ✅ Nuevo usuario ${referredId} guardado con _id: ${newUser._id}`.green);
         return newUser;
     } catch (dbError) {
-        console.error(`[Bot /start] ❌ ERROR DE BASE DE DATOS AL GUARDAR NUEVO USUARIO ${referredId}:`.red.bold);
-        console.error(dbError); 
+        console.error(`[Bot /start] ❌ ERROR DE BASE DE DATOS AL GUARDAR NUEVO USUARIO ${referredId}:`.red.bold, dbError); 
         throw dbError; 
     }
 };
@@ -146,16 +143,12 @@ bot.command('start', async (ctx) => {
         const referredId = ctx.from.id.toString();
         let referrerId = null;
         const startPayload = ctx.startPayload || (ctx.message.text.split(' ')[1] || null);
-        if (startPayload) {
-            referrerId = startPayload.trim();
-        }
+        if (startPayload) referrerId = startPayload.trim();
         
         console.log(`[Bot /start] Petición de inicio. Usuario: ${referredId}. Referente: ${referrerId}`.cyan);
 
         let user = await User.findOne({ telegramId: referredId });
-        if (!user) {
-            user = await handleNewUserCreation(ctx);
-        }
+        if (!user) { user = await handleNewUserCreation(ctx); }
         
         const canBeReferred = referrerId && referrerId !== referredId && !user.referredBy;
         if (canBeReferred) {
@@ -177,10 +170,10 @@ bot.command('start', async (ctx) => {
         
         await ctx.replyWithPhoto(imageUrl, {
             caption: WELCOME_MESSAGE,
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: [[ Markup.button.webApp('🏭 Abrir App', webAppUrl) ]] }
+            parse_mode: 'HTML', // Cambiado a HTML para soportar <b> y otras etiquetas
+            reply_markup: { inline_keyboard: [[ Markup.button.webApp('💎 Abrir App', webAppUrl) ]] }
         });
-        console.log(`[Bot /start] Mensaje de bienvenida enviado a ${referredId}.`);
+        console.log(`[Bot /start] Mensaje de bienvenida (versión Minero) enviado a ${referredId}.`);
 
     } catch (error) {
         console.error('[Bot /start] ERROR FATAL EN EL COMANDO START:'.red.bold, error.message);
@@ -194,9 +187,12 @@ bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicaci
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
 const secretPath = `/api/telegram-webhook/${secretToken}`;
 app.post(secretPath, (req, res) => bot.handleUpdate(req.body, res));
+
 app.use(notFound);
 app.use(errorHandler);
+
 const PORT = process.env.PORT || 5000;
+
 const server = app.listen(PORT, async () => {
     console.log(`[SERVIDOR] 🚀 Servidor corriendo en puerto ${PORT}`.yellow.bold);
     startMonitoring();
@@ -210,6 +206,7 @@ const server = app.listen(PORT, async () => {
         console.error("[SERVIDOR] ❌ ERROR AL CONFIGURAR TELEGRAM:", telegramError.message.red);
     }
 });
+
 process.on('unhandledRejection', (err, promise) => {
     console.error(`❌ ERROR NO MANEJADO: ${err.message}`.red.bold, err);
     server.close(() => process.exit(1));
