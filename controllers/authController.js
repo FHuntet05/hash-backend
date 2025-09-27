@@ -1,8 +1,8 @@
-// RUTA: backend/controllers/authController.js (v6.4 - PAYLOAD DE LOGIN CORREGIDO)
+// RUTA: backend/controllers/authController.js (v6.5 - SEMÁNTICA "MINER" INTEGRADA)
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
-const Factory = require('../models/factoryModel');
+const Miner = require('../models/minerModel'); // CAMBIO CRÍTICO: Se importa Miner en lugar de Factory
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const { getTemporaryPhotoUrl } = require('./userController');
@@ -21,48 +21,73 @@ const syncUser = async (req, res) => {
     try {
         const settings = await Setting.getSettings();
         if (settings.maintenanceMode) { return res.status(503).json({ inMaintenance: true, maintenanceMessage: settings.maintenanceMessage }); }
+        
         let user = await User.findOne({ telegramId });
+
         if (user && user.status === 'banned') { return res.status(403).json({ message: 'Tu cuenta ha sido suspendida. Contacta a soporte.' }); }
+
         let photoFileId = null;
         try {
             const profilePhotosResponse = await axios.get(`${TELEGRAM_API_URL}/getUserProfilePhotos`, { params: { user_id: telegramId, limit: 1 } });
             if (profilePhotosResponse.data.ok && profilePhotosResponse.data.result.total_count > 0) {
-                const photos = profilePhotosResponse.data.result.photos[0];
-                photoFileId = photos[photos.length - 1].file_id;
+                photoFileId = profilePhotosResponse.data.result.photos[0].slice(-1)[0].file_id;
             }
         } catch (photoError) { console.warn(`[Auth Sync] No se pudo obtener la foto de perfil para ${telegramId}.`, photoError.message); }
+
         if (!user) {
-            console.warn(`[Auth Sync] Usuario no encontrado en sync, creando desde cero...`.yellow);
+            console.warn(`[Auth Sync] Usuario no encontrado, creando desde cero...`.yellow);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
-            const initialFactories = [];
-            const freeFactory = await Factory.findOne({ isFree: true }).lean();
-            if (freeFactory) {
+            const initialMiners = []; // 'initialFactories' -> 'initialMiners'
+            const freeMiner = await Miner.findOne({ isFree: true }).lean(); // Usa 'Miner'
+            
+            if (freeMiner) {
                 const purchaseDate = new Date();
                 const expiryDate = new Date(purchaseDate);
-                expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
-                initialFactories.push({ factory: freeFactory._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
+                expiryDate.setDate(expiryDate.getDate() + freeMiner.durationDays);
+                initialMiners.push({ miner: freeMiner._id, purchaseDate, expiryDate, lastClaim: purchaseDate }); // usa 'miner'
             }
-            user = new User({ telegramId, username, fullName, language: telegramUser.language_code || 'es', photoFileId, purchasedFactories: initialFactories });
+            
+            user = new User({ 
+                telegramId, username, fullName, 
+                language: telegramUser.language_code || 'es', 
+                photoFileId, 
+                purchasedMiners: initialMiners // usa 'purchasedMiners'
+            });
+
         } else {
-            if (!user.purchasedFactories || user.purchasedFactories.length === 0) {
-                const freeFactory = await Factory.findOne({ isFree: true }).lean();
-                if (freeFactory) {
-                    const purchaseDate = new Date(); const expiryDate = new Date();
-                    expiryDate.setDate(expiryDate.getDate() + freeFactory.durationDays);
-                    user.purchasedFactories.push({ factory: freeFactory._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
+            // Lógica para asignar minero gratuito a un usuario antiguo que no lo tenga.
+            if (!user.purchasedMiners || user.purchasedMiners.length === 0) {
+                const freeMiner = await Miner.findOne({ isFree: true }).lean(); // Usa 'Miner'
+                if (freeMiner) {
+                    const purchaseDate = new Date(); 
+                    const expiryDate = new Date();
+                    expiryDate.setDate(expiryDate.getDate() + freeMiner.durationDays);
+                    user.purchasedMiners.push({
+                        miner: freeMiner._id, // usa 'miner'
+                        purchaseDate, expiryDate, lastClaim: purchaseDate
+                    });
                 }
             }
         }
+
         user.username = telegramUser.username || user.username;
         user.fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim() || user.fullName;
         if (photoFileId) user.photoFileId = photoFileId;
+        
         await user.save();
-        const userForResponse = await User.findById(user._id).populate({ path: 'purchasedFactories.factory', model: 'Factory' }).populate('referredBy', 'username fullName');
+        
+        // Populate con las nuevas referencias
+        const userForResponse = await User.findById(user._id)
+            .populate({ path: 'purchasedMiners.miner', model: 'Miner' })
+            .populate('referredBy', 'username fullName');
+        
         const userObject = userForResponse.toObject();
         userObject.photoUrl = await getTemporaryPhotoUrl(userObject.photoFileId) || PLACEHOLDER_AVATAR_URL;
         const token = generateToken(userForResponse._id);
+
         res.status(200).json({ token, user: userObject, settings });
+
     } catch (error) {
         console.error('[Auth Sync] ERROR FATAL:'.red.bold, error);
         return res.status(500).json({ message: 'Error interno del servidor.', details: error.message });
@@ -71,7 +96,10 @@ const syncUser = async (req, res) => {
 
 const getUserProfile = async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).populate('purchasedFactories.factory').populate('referredBy', 'username fullName');
+        const user = await User.findById(req.user.id)
+            .populate({ path: 'purchasedMiners.miner', model: 'Miner' }) // Populate con la nueva referencia
+            .populate('referredBy', 'username fullName');
+
         if (!user) { return res.status(404).json({ message: 'Usuario no encontrado' }); }
         const settings = await Setting.getSettings();
         res.json({ user: user.toObject(), settings: settings || {} });
@@ -85,24 +113,13 @@ const loginAdmin = async (req, res) => {
         
         if (adminUser && adminUser.role === 'admin' && (await adminUser.matchPassword(password))) {
             const token = generateToken(adminUser._id);
-            
-            // --- INICIO DE LA CORRECCIÓN ---
-            // Se construye explícitamente el objeto 'admin' para la respuesta,
-            // garantizando que el campo 'telegramId' esté presente.
             const adminPayload = {
                 _id: adminUser._id, 
                 username: adminUser.username,
-                telegramId: adminUser.telegramId, // ESTA LÍNEA CORRIGE EL BUG
+                telegramId: adminUser.telegramId,
                 role: adminUser.role,
             };
-
-            res.json({ 
-                token,
-                admin: adminPayload, // Se envía el payload completo y correcto
-                passwordResetRequired: adminUser.passwordResetRequired || false,
-            });
-            // --- FIN DE LA CORRECCIÓN ---
-
+            res.json({ token, admin: adminPayload, passwordResetRequired: adminUser.passwordResetRequired || false, });
         } else {
             res.status(401).json({ message: 'Credenciales inválidas.' });
         }
@@ -114,7 +131,6 @@ const loginAdmin = async (req, res) => {
 
 const getAdminProfile = async (req, res) => {
     try {
-        // Se asegura que este endpoint también devuelva un objeto consistente y completo.
         const admin = await User.findById(req.user.id).select('_id username role telegramId');
         if (!admin || admin.role !== 'admin') {
             return res.status(401).json({ message: 'No autorizado' });
@@ -135,17 +151,13 @@ const updateAdminPassword = async(req, res) => {
         admin.passwordResetRequired = false;
         await admin.save();
         const token = generateToken(admin._id);
-        const adminPayload = { _id: admin._id, username: admin.username, telegramId: admin.telegramId, role: admin.role, };
-        res.json({
-            token,
-            admin: adminPayload,
-            message: 'Contraseña actualizada con éxito.'
-        });
+        const adminPayload = { _id: admin._id, username: admin.username, telegramId: admin.telegramId, role: admin.role };
+        res.json({ token, admin: adminPayload, message: 'Contraseña actualizada con éxito.' });
     } catch (error) {
         console.error('Error en updateAdminPassword:', error);
         res.status(500).json({ message: 'Error del servidor al actualizar la contraseña.' });
     }
-}
+};
 
 module.exports = { 
     syncUser, 
