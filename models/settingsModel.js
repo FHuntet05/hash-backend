@@ -1,4 +1,4 @@
-// RUTA: backend/models/settingsModel.js (v1.2 - COMISIONES FIJAS MULTINIVEL)
+// RUTA: backend/models/settingsModel.js (v2.0 - FEATURE-002: COMISIONES PORCENTUALES)
 
 const mongoose = require('mongoose');
 
@@ -30,26 +30,15 @@ const settingsSchema = new mongoose.Schema({
         default: false
     },
 
-    // --- INICIO DE NUEVOS CAMPOS PARA COMISIONES FIJAS ---
-    // Comisión en USDT para el referente de Nivel 1 (padre directo).
-    commissionLevel1: {
-        type: Number,
-        default: 0.30,
-        min: 0
-    },
-    // Comisión en USDT para el referente de Nivel 2 (abuelo).
-    commissionLevel2: {
-        type: Number,
-        default: 0.20,
-        min: 0
-    },
-    // Comisión en USDT para el referente de Nivel 3 (bisabuelo).
-    commissionLevel3: {
-        type: Number,
-        default: 0.10,
-        min: 0
+    // --- INICIO DE MODIFICACIÓN CRÍTICA PARA FEATURE-002 ---
+    // Los campos de comisión fija han sido reemplazados por un objeto
+    // que almacena los porcentajes para cada nivel de referido.
+    referralPercentages: {
+        level1: { type: Number, default: 10, min: 0 }, // 10% por defecto
+        level2: { type: Number, default: 5, min: 0 },  // 5% por defecto
+        level3: { type: Number, default: 3, min: 0 }   // 3% por defecto
     }
-    // --- FIN DE NUEVOS CAMPOS ---
+    // --- FIN DE MODIFICACIÓN CRÍTICA ---
 
 }, {
     versionKey: false,
@@ -57,11 +46,12 @@ const settingsSchema = new mongoose.Schema({
 });
 
 settingsSchema.statics.getSettings = async function() {
-    const settings = await this.findById('global_settings');
-    if (settings) {
-        return settings;
+    let settings = await this.findById('global_settings');
+    if (!settings) {
+        // Si no existen settings, se crea el documento inicial.
+        settings = await this.create({ _id: 'global_settings' });
     }
-    return this.create({ _id: 'global_settings' });
+    return settings;
 };
 
 const Settings = mongoose.model('Settings', settingsSchema);
