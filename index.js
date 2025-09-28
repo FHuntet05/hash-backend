@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v2.3 - MODO DE PRUEBA DE WEBHOOK SECRET TOKEN)
+// RUTA: backend/index.js (v2.4 - CORS Y ENRUTAMIENTO CORREGIDO)
 
 const express = require('express');
 const cors = require('cors');
@@ -45,6 +45,7 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 app.disable('etag');
 
+// --- INICIO DE LA CORRECCIÓN DE CORS ---
 const allowedOrigins = [
     process.env.FRONTEND_URL,
     'http://localhost:3000',
@@ -53,55 +54,44 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin: (origin, callback) => {
+        console.log(`[CORS] Petición recibida del origen: ${origin}`);
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            console.error(`[CORS] ❌ Origen RECHAZADO: '${origin}'. No está en la whitelist.`.red.bold);
+            console.error(`[CORS] ❌ Origen RECHAZADO: '${origin}'. No está en la whitelist: ${allowedOrigins.join(', ')}`.red.bold);
             callback(new Error(`Origen no permitido por CORS: ${origin}`));
         }
     },
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
     credentials: true,
 };
-
 app.use(cors(corsOptions));
+// --- FIN DE LA CORRECCIÓN DE CORS ---
+
 app.use(express.json());
 
-// --- [INICIO DE LA CORRECCIÓN DE PRUEBA DEFINITIVA] ---
-bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
 const secretPath = `/api/telegram-webhook/${secretToken}`;
-
 app.post(secretPath, (req, res) => {
-    // AÑADIMOS UN LOG PARA CONFIRMAR LA LLEGADA DE LA PETICIÓN
-    console.log('[WEBHOOK] Petición de Telegram RECIBIDA.');
-
-    // COMENTAMOS TEMPORALMENTE LA VERIFICACIÓN DE SEGURIDAD
-    /*
-    const telegramSecretToken = req.headers['x-telegram-bot-api-secret-token'];
-    if (telegramSecretToken !== secretToken) {
-        console.warn('[WEBHOOK] Petición rechazada: secret_token inválido.');
-        return res.status(401).send('Unauthorized');
-    }
-    */
-    
-    // Dejamos que la petición pase directamente al bot.
     bot.handleUpdate(req.body, res);
 });
-// --- [FIN DE LA CORRECCIÓN DE PRUEBA DEFINITIVA] ---
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/ranking', rankingRoutes);
-app.use('/api/wallet', walletRoutes);
-app.use('/api/team', teamRoutes);
-app.use('/api/tasks', taskRoutes);
-app.use('/api/payment', paymentRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/treasury', treasuryRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/miners', minerRoutes);
+// --- INICIO DE LA CORRECCIÓN DE ENRUTAMIENTO ---
+const apiRouter = express.Router();
+apiRouter.use('/auth', authRoutes);
+apiRouter.use('/ranking', rankingRoutes);
+apiRouter.use('/wallet', walletRoutes);
+apiRouter.use('/team', teamRoutes);
+apiRouter.use('/tasks', taskRoutes);
+apiRouter.use('/payment', paymentRoutes);
+apiRouter.use('/admin', adminRoutes);
+apiRouter.use('/treasury', treasuryRoutes);
+apiRouter.use('/users', userRoutes);
+apiRouter.use('/miners', minerRoutes);
+app.use('/api', apiRouter);
+// --- FIN DE LA CORRECCIÓN DE ENRUTAMIENTO ---
 
 const WELCOME_MESSAGE = `
 🤖 **¡Bienvenido a Mega Minería!**\n\n

@@ -1,4 +1,4 @@
-// backend/routes/authRoutes.js (FINAL CON RUTA DE UPDATE DE CONTRASEÑA)
+// backend/routes/authRoutes.js (v2.0 - DEFINITIVO)
 const express = require('express');
 const router = express.Router();
 const { 

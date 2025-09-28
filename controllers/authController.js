@@ -2,7 +2,7 @@
 
 const User = require('../models/userModel');
 const Setting = require('../models/settingsModel');
-const Miner = require('../models/minerModel'); // CAMBIO CRÍTICO: Se importa Miner en lugar de Factory
+const Miner = require('../models/minerModel');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const { getTemporaryPhotoUrl } = require('./userController');
@@ -38,33 +38,32 @@ const syncUser = async (req, res) => {
             console.warn(`[Auth Sync] Usuario no encontrado, creando desde cero...`.yellow);
             const username = telegramUser.username || `user_${telegramId}`;
             const fullName = `${telegramUser.first_name || ''} ${telegramUser.last_name || ''}`.trim();
-            const initialMiners = []; // 'initialFactories' -> 'initialMiners'
-            const freeMiner = await Miner.findOne({ isFree: true }).lean(); // Usa 'Miner'
+            const initialMiners = [];
+            const freeMiner = await Miner.findOne({ isFree: true }).lean();
             
             if (freeMiner) {
                 const purchaseDate = new Date();
                 const expiryDate = new Date(purchaseDate);
                 expiryDate.setDate(expiryDate.getDate() + freeMiner.durationDays);
-                initialMiners.push({ miner: freeMiner._id, purchaseDate, expiryDate, lastClaim: purchaseDate }); // usa 'miner'
+                initialMiners.push({ miner: freeMiner._id, purchaseDate, expiryDate, lastClaim: purchaseDate });
             }
             
             user = new User({ 
                 telegramId, username, fullName, 
                 language: telegramUser.language_code || 'es', 
                 photoFileId, 
-                purchasedMiners: initialMiners // usa 'purchasedMiners'
+                purchasedMiners: initialMiners
             });
 
         } else {
-            // Lógica para asignar minero gratuito a un usuario antiguo que no lo tenga.
             if (!user.purchasedMiners || user.purchasedMiners.length === 0) {
-                const freeMiner = await Miner.findOne({ isFree: true }).lean(); // Usa 'Miner'
+                const freeMiner = await Miner.findOne({ isFree: true }).lean();
                 if (freeMiner) {
                     const purchaseDate = new Date(); 
                     const expiryDate = new Date();
                     expiryDate.setDate(expiryDate.getDate() + freeMiner.durationDays);
                     user.purchasedMiners.push({
-                        miner: freeMiner._id, // usa 'miner'
+                        miner: freeMiner._id,
                         purchaseDate, expiryDate, lastClaim: purchaseDate
                     });
                 }
@@ -77,7 +76,6 @@ const syncUser = async (req, res) => {
         
         await user.save();
         
-        // Populate con las nuevas referencias
         const userForResponse = await User.findById(user._id)
             .populate({ path: 'purchasedMiners.miner', model: 'Miner' })
             .populate('referredBy', 'username fullName');
@@ -97,7 +95,7 @@ const syncUser = async (req, res) => {
 const getUserProfile = async (req, res) => {
     try {
         const user = await User.findById(req.user.id)
-            .populate({ path: 'purchasedMiners.miner', model: 'Miner' }) // Populate con la nueva referencia
+            .populate({ path: 'purchasedMiners.miner', model: 'Miner' })
             .populate('referredBy', 'username fullName');
 
         if (!user) { return res.status(404).json({ message: 'Usuario no encontrado' }); }
