@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v2.0 - SEMÁNTICA "MINER" Y RUTAS INTEGRADAS)
+// RUTA: backend/index.js (v2.1 - MODIFICADO PARA COMPATIBILIDAD CON VERCEL SERVERLESS)
 
 const express = require('express');
 const cors = require('cors');
@@ -9,10 +9,10 @@ const dotenv = require('dotenv');
 const colors = require('colors');
 const connectDB = require('./config/db');
 const User = require('./models/userModel');
-const Miner = require('./models/minerModel'); // CAMBIO CRÍTICO: Se importa Miner en lugar de Factory.
+const Miner = require('./models/minerModel');
 const { startMonitoring } = require('./services/transactionMonitor.js');
 
-console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA v11.0...');
+console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA v11.0 (Entorno Serverless)...');
 dotenv.config();
 
 function checkEnvVariables() {
@@ -21,14 +21,14 @@ function checkEnvVariables() {
     const missingVars = requiredVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
         console.error(`!! ERROR FATAL: FALTAN VARIABLES DE ENTORNO: ${missingVars.join(', ')}`.red.bold);
-        process.exit(1);
+        // En un entorno serverless, no podemos usar process.exit(1). El error se registrará en los logs de Vercel.
+        throw new Error(`Variables de entorno faltantes: ${missingVars.join(', ')}`);
     }
     console.log('[SISTEMA] ✅ Todas las variables de entorno críticas están presentes.');
 }
 checkEnvVariables();
 connectDB();
 
-// --- [INICIO REFACTORIZACIÓN DE IMPORTACIONES] ---
 const authRoutes = require('./routes/authRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
@@ -38,9 +38,8 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const treasuryRoutes = require('./routes/treasuryRoutes');
 const userRoutes = require('./routes/userRoutes');
-const minerRoutes = require('./routes/minerRoutes'); // CAMBIO CRÍTICO: Se importa minerRoutes
+const minerRoutes = require('./routes/minerRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
-// --- [FIN REFACTORIZACIÓN DE IMPORTACIONES] ---
 
 const app = express();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -55,6 +54,7 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin: (origin, callback) => {
+        // En serverless, es mejor permitir el origen directamente si existe en la lista, o si no hay origen (peticiones de servidor a servidor).
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
@@ -71,9 +71,9 @@ app.use(cors(corsOptions));
 
 app.use(express.json());
 
+// Ruta de health check para verificar que la función serverless está viva.
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-// --- [INICIO REFACTORIZACIÓN DE RUTAS] ---
 app.use('/api/auth', authRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);
@@ -83,11 +83,10 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/miners', minerRoutes); // CAMBIO CRÍTICO: Se registra la ruta /api/miners.
-// La ruta '/api/factories' queda eliminada.
-// --- [FIN REFACTORIZACIÓN DE RUTAS] ---
+app.use('/api/miners', minerRoutes);
 
-// --- [Lógica del Bot de Telegram refactorizada a "Mineros"] ---
+// --- [INICIO Lógica del Bot de Telegram] ---
+// Esta lógica se mantiene sin cambios, ya que está impulsada por eventos (comandos).
 const WELCOME_MESSAGE = `
 🤖 **¡Bienvenido a Mega Minería!**\n\n
 💎 Tu centro de operaciones para la producción digital. Conecta, construye tu granja y genera ingresos pasivos en USDT.\n
@@ -110,7 +109,7 @@ const handleNewUserCreation = async (ctx) => {
     const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
 
     const initialMiners = [];
-    const freeMiner = await Miner.findOne({ isFree: true }).lean(); // CAMBIO: Busca un Miner.
+    const freeMiner = await Miner.findOne({ isFree: true }).lean();
     if (freeMiner) {
         const purchaseDate = new Date();
         const expiryDate = new Date(purchaseDate);
@@ -125,7 +124,7 @@ const handleNewUserCreation = async (ctx) => {
         username, 
         fullName: fullName || username, 
         language: ctx.from.language_code || 'es',
-        purchasedMiners: initialMiners // CAMBIO: Asigna a purchasedMiners.
+        purchasedMiners: initialMiners
     });
     
     try {
@@ -170,7 +169,7 @@ bot.command('start', async (ctx) => {
         
         await ctx.replyWithPhoto(imageUrl, {
             caption: WELCOME_MESSAGE,
-            parse_mode: 'HTML', // Cambiado a HTML para soportar <b> y otras etiquetas
+            parse_mode: 'HTML',
             reply_markup: { inline_keyboard: [[ Markup.button.webApp('💎 Abrir App', webAppUrl) ]] }
         });
         console.log(`[Bot /start] Mensaje de bienvenida (versión Minero) enviado a ${referredId}.`);
@@ -180,9 +179,13 @@ bot.command('start', async (ctx) => {
         await ctx.reply('Lo sentimos, ha ocurrido un error al procesar tu solicitud.');
     }
 });
-// --- [Fin de la lógica del Bot] ---
+// --- [FIN Lógica del Bot de Telegram] ---
 
-
+// --- [MODIFICACIÓN PARA VERCEL] ---
+// La configuración del webhook no puede estar en app.listen.
+// En Vercel, el webhook se debe configurar UNA SOLA VEZ, ya sea manualmente
+// o a través de un endpoint protegido. Por ahora, el código para establecer el webhook
+// está desactivado. El bot seguirá funcionando si el webhook ya está configurado.
 bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
 const secretPath = `/api/telegram-webhook/${secretToken}`;
@@ -191,23 +194,13 @@ app.post(secretPath, (req, res) => bot.handleUpdate(req.body, res));
 app.use(notFound);
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5000;
+// --- [MODIFICACIÓN CRÍTICA PARA VERCEL] ---
+// Se ha eliminado el bloque `app.listen(...)` y `process.on('unhandledRejection', ...)`.
+// Vercel gestiona el ciclo de vida del servidor. No necesitamos ni podemos escucharlo manualmente.
 
-const server = app.listen(PORT, async () => {
-    console.log(`[SERVIDOR] 🚀 Servidor corriendo en puerto ${PORT}`.yellow.bold);
-    startMonitoring();
-    try {
-        const botInfo = await bot.telegram.getMe();
-        console.log(`[SERVIDOR] ✅ Conectado como bot: ${botInfo.username}.`);
-        const webhookUrl = `${process.env.BACKEND_URL}${secretPath}`;
-        await bot.telegram.setWebhook(webhookUrl, { secret_token: secretToken, drop_pending_updates: true });
-        console.log(`[SERVIDOR] ✅ Webhook configurado en: ${webhookUrl}`.green.bold);
-    } catch (telegramError) {
-        console.error("[SERVIDOR] ❌ ERROR AL CONFIGURAR TELEGRAM:", telegramError.message.red);
-    }
-});
+// El monitoreo de transacciones se inicia directamente al cargar el módulo.
+// Esto se ejecutará cada vez que una instancia "fría" de la función serverless se inicie.
+startMonitoring();
 
-process.on('unhandledRejection', (err, promise) => {
-    console.error(`❌ ERROR NO MANEJADO: ${err.message}`.red.bold, err);
-    server.close(() => process.exit(1));
-});
+// Se exporta la instancia de la aplicación `app` para que Vercel pueda usarla.
+module.exports = app;
