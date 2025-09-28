@@ -1,18 +1,9 @@
-// RUTA: backend/middleware/authMiddleware.js (MODO DE PRUEBA TEMPORAL - ¡INSEGURO!)
+// RUTA: backend/middleware/authMiddleware.js (VERSIÓN SEGURA RESTAURADA)
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
 const asyncHandler = require('express-async-handler');
 
 const protect = asyncHandler(async (req, res, next) => {
-  // --- INICIO DE MODIFICACIÓN TEMPORAL ---
-  // Se comenta toda la lógica de seguridad para la prueba.
-  // ¡ESTO DESACTIVA TODA LA SEGURIDAD DE LA API! SOLO PARA DEPURACIÓN.
-  
-  console.log('!!! ADVERTENCIA: EL MIDDLEWARE "PROTECT" ESTÁ DESACTIVADO TEMPORALMENTE !!!');
-  next(); // Esta línea permite que TODAS las peticiones pasen sin verificación.
-  
-  // --- CÓDIGO ORIGINAL COMENTADO ---
-  /*
   let token;
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     try {
@@ -38,13 +29,9 @@ const protect = asyncHandler(async (req, res, next) => {
     res.status(401);
     throw new Error('No autorizado, no se encontró token.');
   }
-  */
-  // --- FIN DE MODIFICACIÓN TEMPORAL ---
 });
 
 const isAdmin = (req, res, next) => {
-    // Esta lógica no se verá afectada si 'protect' está desactivado,
-    // ya que 'req.user' no existirá. Se mantiene por completitud.
     if (req.user && req.user.role === 'admin') {
         next();
     } else {
@@ -54,7 +41,7 @@ const isAdmin = (req, res, next) => {
 
 const isSuperAdmin = (req, res, next) => {
     if (!process.env.ADMIN_TELEGRAM_ID) {
-        console.error('CRITICAL SECURITY ALERT: ADMIN_TELEGRAM_ID is not set.');
+        console.error('CRITICAL SECURITY ALERT: ADMIN_TELEGRAM_ID is not set.'.red.bold);
         return res.status(500).json({ message: 'Error de configuración del servidor.' });
     }
     if (req.user && req.user.telegramId === process.env.ADMIN_TELEGRAM_ID) {
