@@ -27,7 +27,8 @@
     "qrcode": "^1.5.3",
     "speakeasy": "^2.0.0",
     "telegraf": "^4.16.3",
-    "tronweb": "^6.0.3"
+    "tronweb": "^6.0.3",
+    "wallet-address-validator": "^0.2.4"
   },
   "devDependencies": {
     "nodemon": "^3.1.2"

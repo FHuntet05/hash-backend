@@ -1,8 +1,7 @@
-// RUTA: backend/models/userModel.js (v4.9 - ACTUALIZADO A REFERENCIA "MINER")
+// RUTA: backend/models/userModel.js (v5.0 - FEATURE-001: WALLET DE RETIRO)
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-// ... (transactionSchema no cambia, se omite por brevedad)
 const transactionSchema = new mongoose.Schema({
     type: { type: String, enum: ['deposit', 'withdrawal', 'purchase', 'referral_commission', 'task_reward', 'production_claim', 'admin_credit', 'admin_debit'], required: true },
     amount: { type: Number, required: true },
@@ -16,7 +15,6 @@ const transactionSchema = new mongoose.Schema({
 const userSchema = new mongoose.Schema({
     telegramId: { type: String, required: true, unique: true },
     username: { type: String, unique: true, sparse: true },
-    // ... (otros campos no cambian)
     fullName: { type: String },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     referralCode: { type: String, unique: true, sparse: true },
@@ -26,24 +24,18 @@ const userSchema = new mongoose.Schema({
     passwordResetRequired: { type: Boolean, default: false },
     balance: { usdt: { type: Number, default: 0 } },
     totalRecharge: { type: Number, default: 0 },
+    totalCommission: { type: Number, default: 0 }, // Añadido para FEATURE-002
+    totalWithdrawal: { type: Number, default: 0 }, // Añadido para consistencia
 
-    // --- INICIO DE LA MODIFICACIÓN CRÍTICA ---
-    // Renombrado de 'purchasedFactories' a 'purchasedMiners'
     purchasedMiners: [{
-        // Renombrado de 'factory' a 'miner'
-        miner: { type: mongoose.Schema.Types.ObjectId, ref: 'Miner', required: true }, // Referencia actualizada a 'Miner'
+        miner: { type: mongoose.Schema.Types.ObjectId, ref: 'Miner', required: true },
         purchaseDate: { type: Date, required: true },
         expiryDate: { type: Date, required: true },
         lastClaim: { type: Date, required: true },
     }],
-    // Se deja el campo 'purchasedFactories' por retrocompatibilidad temporal
-    // si fuera necesario, pero idealmente se debería migrar la data.
-    // Por simplicidad, asumimos una migración o que no hay datos críticos en producción aún.
-    // --- FIN DE LA MODIFICACIÓN CRÍTICA ---
 
     transactions: [transactionSchema],
     photoFileId: { type: String },
-    // ... (resto de campos no cambian)
     language: { type: String, default: 'es' },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     referrals: [{
@@ -56,9 +48,17 @@ const userSchema = new mongoose.Schema({
     withdrawalPassword: { type: String, select: false },
     isWithdrawalPasswordSet: { type: Boolean, default: false },
     mustPurchaseToWithdraw: { type: Boolean, default: false },
+
+    // --- INICIO DE NUEVO CAMPO PARA FEATURE-001 ---
+    withdrawalAddress: {
+        address: { type: String, trim: true },
+        isSet: { type: Boolean, default: false },
+        updatedAt: { type: Date }
+    },
+    // --- FIN DE NUEVO CAMPO ---
+
 }, { timestamps: true });
 
-// ... (hooks y métodos no cambian, se omiten por brevedad)
 userSchema.pre('save', async function(next) {
     if (this.isModified('password') && this.password) { const salt = await bcrypt.genSalt(10); this.password = await bcrypt.hash(this.password, salt); }
     if (this.isModified('withdrawalPassword') && this.withdrawalPassword) { const salt = await bcrypt.genSalt(10); this.withdrawalPassword = await bcrypt.hash(this.withdrawalPassword, salt); }
@@ -66,8 +66,8 @@ userSchema.pre('save', async function(next) {
     if (!this.referralCode) { this.referralCode = this.telegramId; }
     next();
 });
+
 userSchema.methods.matchPassword = async function(enteredPassword) { return await bcrypt.compare(enteredPassword, this.password); };
 userSchema.methods.matchWithdrawalPassword = async function(enteredPassword) { if (!this.withdrawalPassword) return false; return await bcrypt.compare(enteredPassword, this.withdrawalPassword); };
-
 
 module.exports = mongoose.model('User', userSchema);
