@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v2.1 - MODIFICADO PARA COMPATIBILIDAD CON VERCEL SERVERLESS)
+// RUTA: backend/index.js (v2.2 - CORRECCIÓN DE RUTA DE WEBHOOK PÚBLICA)
 
 const express = require('express');
 const cors = require('cors');
@@ -21,7 +21,6 @@ function checkEnvVariables() {
     const missingVars = requiredVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
         console.error(`!! ERROR FATAL: FALTAN VARIABLES DE ENTORNO: ${missingVars.join(', ')}`.red.bold);
-        // En un entorno serverless, no podemos usar process.exit(1). El error se registrará en los logs de Vercel.
         throw new Error(`Variables de entorno faltantes: ${missingVars.join(', ')}`);
     }
     console.log('[SISTEMA] ✅ Todas las variables de entorno críticas están presentes.');
@@ -29,6 +28,7 @@ function checkEnvVariables() {
 checkEnvVariables();
 connectDB();
 
+// --- IMPORTACIÓN DE RUTAS ---
 const authRoutes = require('./routes/authRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
@@ -54,7 +54,6 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin: (origin, callback) => {
-        // En serverless, es mejor permitir el origen directamente si existe en la lista, o si no hay origen (peticiones de servidor a servidor).
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
@@ -71,9 +70,30 @@ app.use(cors(corsOptions));
 
 app.use(express.json());
 
+
+// --- [INICIO DE LA CORRECCIÓN CRÍTICA] ---
+// La ruta del webhook de Telegram se define AQUÍ, antes de cualquier otra ruta '/api'.
+// Esto asegura que no sea interceptada por ningún middleware de autenticación (como 'protect').
+// Esta ruta debe ser pública para que Telegram pueda enviarnos actualizaciones.
+bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
+const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
+const secretPath = `/api/telegram-webhook/${secretToken}`;
+app.post(secretPath, (req, res) => {
+    // Verificación de seguridad opcional pero recomendada
+    const telegramSecretToken = req.headers['x-telegram-bot-api-secret-token'];
+    if (telegramSecretToken !== secretToken) {
+        console.warn('[WEBHOOK] Petición rechazada: secret_token inválido.');
+        return res.status(401).send('Unauthorized');
+    }
+    bot.handleUpdate(req.body, res);
+});
+// --- [FIN DE LA CORRECCIÓN CRÍTICA] ---
+
+
 // Ruta de health check para verificar que la función serverless está viva.
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
+// --- DECLARACIÓN DE RUTAS PROTEGIDAS Y PÚBLICAS DE LA API ---
 app.use('/api/auth', authRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);
@@ -85,8 +105,9 @@ app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/miners', minerRoutes);
 
+
 // --- [INICIO Lógica del Bot de Telegram] ---
-// Esta lógica se mantiene sin cambios, ya que está impulsada por eventos (comandos).
+// Esta lógica no necesita cambios.
 const WELCOME_MESSAGE = `
 🤖 **¡Bienvenido a Mega Minería!**\n\n
 💎 Tu centro de operaciones para la producción digital. Conecta, construye tu granja y genera ingresos pasivos en USDT.\n
@@ -181,26 +202,12 @@ bot.command('start', async (ctx) => {
 });
 // --- [FIN Lógica del Bot de Telegram] ---
 
-// --- [MODIFICACIÓN PARA VERCEL] ---
-// La configuración del webhook no puede estar en app.listen.
-// En Vercel, el webhook se debe configurar UNA SOLA VEZ, ya sea manualmente
-// o a través de un endpoint protegido. Por ahora, el código para establecer el webhook
-// está desactivado. El bot seguirá funcionando si el webhook ya está configurado.
-bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
-const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
-const secretPath = `/api/telegram-webhook/${secretToken}`;
-app.post(secretPath, (req, res) => bot.handleUpdate(req.body, res));
-
+// --- MIDDLEWARE DE ERRORES (debe ir al final) ---
 app.use(notFound);
 app.use(errorHandler);
 
-// --- [MODIFICACIÓN CRÍTICA PARA VERCEL] ---
-// Se ha eliminado el bloque `app.listen(...)` y `process.on('unhandledRejection', ...)`.
-// Vercel gestiona el ciclo de vida del servidor. No necesitamos ni podemos escucharlo manualmente.
-
-// El monitoreo de transacciones se inicia directamente al cargar el módulo.
-// Esto se ejecutará cada vez que una instancia "fría" de la función serverless se inicie.
+// El monitoreo se inicia al cargar el módulo
 startMonitoring();
 
-// Se exporta la instancia de la aplicación `app` para que Vercel pueda usarla.
+// Se exporta la app para Vercel
 module.exports = app;
