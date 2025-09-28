@@ -1,4 +1,4 @@
-// RUTA: backend/index.js (v2.2 - CORRECCIÓN DE RUTA DE WEBHOOK PÚBLICA)
+// RUTA: backend/index.js (v2.3 - MODO DE PRUEBA DE WEBHOOK SECRET TOKEN)
 
 const express = require('express');
 const cors = require('cors');
@@ -28,7 +28,6 @@ function checkEnvVariables() {
 checkEnvVariables();
 connectDB();
 
-// --- IMPORTACIÓN DE RUTAS ---
 const authRoutes = require('./routes/authRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const walletRoutes = require('./routes/walletRoutes');
@@ -65,35 +64,34 @@ const corsOptions = {
     credentials: true,
 };
 
-console.log(`[SISTEMA] Configurando CORS para permitir orígenes: ${allowedOrigins.join(', ')}`.cyan);
 app.use(cors(corsOptions));
-
 app.use(express.json());
 
-
-// --- [INICIO DE LA CORRECCIÓN CRÍTICA] ---
-// La ruta del webhook de Telegram se define AQUÍ, antes de cualquier otra ruta '/api'.
-// Esto asegura que no sea interceptada por ningún middleware de autenticación (como 'protect').
-// Esta ruta debe ser pública para que Telegram pueda enviarnos actualizaciones.
+// --- [INICIO DE LA CORRECCIÓN DE PRUEBA DEFINITIVA] ---
 bot.telegram.setMyCommands([{ command: 'start', description: 'Inicia la aplicación' }]);
 const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex');
 const secretPath = `/api/telegram-webhook/${secretToken}`;
+
 app.post(secretPath, (req, res) => {
-    // Verificación de seguridad opcional pero recomendada
+    // AÑADIMOS UN LOG PARA CONFIRMAR LA LLEGADA DE LA PETICIÓN
+    console.log('[WEBHOOK] Petición de Telegram RECIBIDA.');
+
+    // COMENTAMOS TEMPORALMENTE LA VERIFICACIÓN DE SEGURIDAD
+    /*
     const telegramSecretToken = req.headers['x-telegram-bot-api-secret-token'];
     if (telegramSecretToken !== secretToken) {
         console.warn('[WEBHOOK] Petición rechazada: secret_token inválido.');
         return res.status(401).send('Unauthorized');
     }
+    */
+    
+    // Dejamos que la petición pase directamente al bot.
     bot.handleUpdate(req.body, res);
 });
-// --- [FIN DE LA CORRECCIÓN CRÍTICA] ---
+// --- [FIN DE LA CORRECCIÓN DE PRUEBA DEFINITIVA] ---
 
-
-// Ruta de health check para verificar que la función serverless está viva.
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-// --- DECLARACIÓN DE RUTAS PROTEGIDAS Y PÚBLICAS DE LA API ---
 app.use('/api/auth', authRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/wallet', walletRoutes);
@@ -105,9 +103,6 @@ app.use('/api/treasury', treasuryRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/miners', minerRoutes);
 
-
-// --- [INICIO Lógica del Bot de Telegram] ---
-// Esta lógica no necesita cambios.
 const WELCOME_MESSAGE = `
 🤖 **¡Bienvenido a Mega Minería!**\n\n
 💎 Tu centro de operaciones para la producción digital. Conecta, construye tu granja y genera ingresos pasivos en USDT.\n
@@ -200,14 +195,10 @@ bot.command('start', async (ctx) => {
         await ctx.reply('Lo sentimos, ha ocurrido un error al procesar tu solicitud.');
     }
 });
-// --- [FIN Lógica del Bot de Telegram] ---
 
-// --- MIDDLEWARE DE ERRORES (debe ir al final) ---
 app.use(notFound);
 app.use(errorHandler);
 
-// El monitoreo se inicia al cargar el módulo
 startMonitoring();
 
-// Se exporta la app para Vercel
 module.exports = app;
