@@ -175,7 +175,7 @@ bot.command('start', async (ctx) => {
             }
         }
         
-        const imageUrl = 'https://i.postimg.cc/qqFZGPVD/MGFAB.jpg';
+        const imageUrl = 'https://ibb.co/Pvxvn51m';
         const webAppUrl = process.env.FRONTEND_URL;
         
         await ctx.replyWithPhoto(imageUrl, {
