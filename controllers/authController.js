@@ -7,7 +7,7 @@ const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const { getTemporaryPhotoUrl } = require('./userController');
 
-const PLACEHOLDER_AVATAR_URL = `${process.env.FRONTEND_URL}/assets/images/user-avatar-placeholder.png`;
+const PLACEHOLDER_AVATAR_URL = `${process.env.FRONTEND_URL}/assets/images/placeholder.png`;
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
 const generateToken = (id) => {
