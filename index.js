@@ -94,19 +94,24 @@ app.use('/api', apiRouter);
 // --- FIN DE LA CORRECCIÓN DE ENRUTAMIENTO ---
 
 const WELCOME_MESSAGE = `
-🤖 **¡Bienvenido a Mega Minería!**\n\n
-💎 Tu centro de operaciones para la producción digital. Conecta, construye tu granja y genera ingresos pasivos en USDT.\n
-📘 **¿Cómo funciona tu operación minera?**\n
-🔹 **1. Adquiere tus Mineros**\n\n
-🛒 Visita el mercado y compra diferentes tipos de mineros usando USDT. Cada uno tiene un poder de minado y vida útil únicos.\n
-🔹 **2. Producción Automática 24/7**\n\n
-⚙️ Una vez adquiridos, tus mineros empiezan a generar USDT automáticamente. ¡Incluso mientras duermes!\n
-🔹 **3. Reclama tus Ganancias**\n\n
-💰 Accede a tu panel y reclama la producción de tus mineros para añadirla a tu saldo principal.\n
-🔹 **4. Construye tu Red**\n\n
-🤝 Invita a otros mineros con tu enlace personal. Ganarás una comisión porcentual **cada vez** que tus referidos hagan un depósito.\n
-🚀 **¿Listo para encender tu primer minero?**
-🔘 Pulsa el botón inferior para abrir la aplicación y empezar a producir.`;
+Welcome to Hash PowerBot 
+
+Hash PowerBot is a cloud mining platform that allows you to generate income with cryptocurrencies without needing your own hardware. Our goal is to provide easy, secure, and professional access to mining, directly through this bot.
+
+ How it works
+• Purchase hash power packages.  
+• Our team manages rigs and pools to maximize efficiency.  
+• Receive your rewards automatically based on the power you own.  
+• Withdraw your earnings quickly and securely.  
+
+ Why choose Hash PowerBot
+• Instant access with no technical setup.  
+• Professional infrastructure with 24/7 monitoring.  
+• Transparency: regular reports and on-chain proofs.  
+• Guaranteed security with encrypted systems.  
+• 24/7 customer support through the official channel.  
+
+ Hash PowerBot gives you professional access to cloud mining. Start today and become part of our mining community!`;
 
 const handleNewUserCreation = async (ctx) => {
     const referredId = ctx.from.id.toString();

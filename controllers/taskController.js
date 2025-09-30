@@ -8,18 +8,18 @@ const Miner = require('../models/minerModel.js');
 // La configuración anterior se elimina. Ahora solo manejaremos tareas de invitación.
 // VALORES ACTUALIZADOS SEGÚN SU DIRECTIVA.
 const TASKS_CONFIG = {
-    INVITE_1: { reward: 0.001, target: 1 },    // Invita 1 amigo
-    INVITE_2: { reward: 0.003, target: 3 },    // Invita 3 amigos
-    INVITE_3: { reward: 0.005, target: 5 },    // Invita 5 amigos
-    INVITE_4: { reward: 0.007, target: 10 },   // Invita 10 amigos
-    INVITE_5: { reward: 0.010, target: 20 },   // Invita 20 amigos
-    INVITE_6: { reward: 0.03,  target: 50 },   // Invita 50 amigos
-    INVITE_7: { reward: 0.05,  target: 100 },  // Invita 100 amigos
-    INVITE_8: { reward: 0.10,  target: 150 },  // Invita 150 amigos
-    INVITE_9: { reward: 0.30,  target: 200 },  // Invita 200 amigos
-    INVITE_10: { reward: 0.60, target: 300 },  // Invita 300 amigos
-    INVITE_11: { reward: 0.80, target: 500 },  // Invita 500 amigos
-    INVITE_12: { reward: 1.00, target: 1000 }, // Invita 1000 amigos
+    INVITE_1: { reward: 0.01, target: 1 },    // Invita 1 amigo
+    INVITE_2: { reward: 0.03, target: 3 },    // Invita 3 amigos
+    INVITE_3: { reward: 0.05, target: 5 },    // Invita 5 amigos
+    INVITE_4: { reward: 0.1, target: 10 },   // Invita 10 amigos
+    INVITE_5: { reward: 0.3, target: 20 },   // Invita 20 amigos
+    INVITE_6: { reward: 0.5,  target: 50 },   // Invita 50 amigos
+    INVITE_7: { reward: 0.6,  target: 100 },  // Invita 100 amigos
+    INVITE_8: { reward: 0.7,  target: 150 },  // Invita 150 amigos
+    INVITE_9: { reward: 0.8,  target: 200 },  // Invita 200 amigos
+    INVITE_10: { reward: 0.9, target: 300 },  // Invita 300 amigos
+    INVITE_11: { reward: 1.00, target: 500 },  // Invita 500 amigos
+    INVITE_12: { reward: 1.50, target: 1000 }, // Invita 1000 amigos
 };
 
 // El orden secuencial de las tareas de invitación es ahora fundamental.
