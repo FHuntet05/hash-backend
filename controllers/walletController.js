@@ -26,77 +26,59 @@ const createDepositAddress = async (req, res) => {
     }
 };
 
-const purchaseFactoryWithBalance = async (req, res) => {
-    // CAMBIO: La ruta en el frontend ahora envía 'minerId', pero mantenemos 'factoryId' por si acaso.
-    const { factoryId, minerId, quantity = 1 } = req.body;
-    const idToFind = minerId || factoryId; // Usamos el nuevo ID si está disponible.
+const purchaseFactoryWithBalance = asyncHandler(async (req, res) => {
+  const { factoryId, quantity } = req.body; // factoryId es el ID del Potenciador
+  const qty = parseInt(quantity) || 1;
 
-    const userId = req.user.id;
-    const session = await mongoose.startSession();
-    try {
-        session.startTransaction();
-        const miner = await Miner.findById(idToFind).session(session).lean();
-        if (!miner) { throw new Error('El minero seleccionado no existe.'); }
-        
-        const user = await User.findById(userId).session(session);
-        if (!user) { throw new Error('Usuario no encontrado.'); }
-        
-        const totalCost = miner.price * quantity;
-        if (user.balance.usdt < totalCost) {
-            return res.status(400).json({ message: 'Saldo USDT insuficiente.' });
-        }
+  const user = await User.findById(req.user.id);
+  const miner = await Miner.findById(factoryId); // Buscamos el potenciador
 
-        // --- INICIO DE MODIFICACIÓN CRÍTICA ---
-        // Se elimina toda la lógica de comisiones de la función de compra.
-        // La nueva regla de negocio es que las comisiones solo se generan por DEPÓSITOS,
-        // no por compras con saldo interno. Esto previene bucles de comisiones.
-        /*
-        const shouldTriggerCommission = !miner.isFree && !user.hasTriggeredReferralCommission;
-        if (shouldTriggerCommission) {
-            await processMultiLevelCommissions(user, session); 
-            user.hasTriggeredReferralCommission = true;
-        }
-        */
-        // --- FIN DE MODIFICACIÓN CRÍTICA ---
+  if (!miner) { res.status(404); throw new Error('Potenciador no encontrado'); }
 
-        user.balance.usdt -= totalCost;
-        if (user.mustPurchaseToWithdraw) {
-            user.mustPurchaseToWithdraw = false;
-        }
-        
-        const now = new Date();
-        for (let i = 0; i < quantity; i++) {
-            user.purchasedMiners.push({
-                miner: miner._id,
-                purchaseDate: now, 
-                expiryDate: new Date(now.getTime() + miner.durationDays * 24 * 60 * 60 * 1000),
-                lastClaim: now
-            });
-        }
-        
-        user.transactions.push({
-            type: 'purchase',
-            amount: -totalCost,
-            currency: 'USDT',
-            description: `Compra de ${quantity}x Minero ${miner.name}`,
-            status: 'completed',
-            metadata: { minerId: miner._id }
-        });
+  const totalCost = miner.price * qty;
+  if (user.balance.usdt < totalCost) {
+    res.status(400); throw new Error('Saldo insuficiente');
+  }
 
-        await user.save({ session });
-        await session.commitTransaction();
-        
-        const updatedUser = await User.findById(userId).populate('purchasedMiners.miner');
-        res.status(200).json({ message: `¡Compra de ${quantity}x ${miner.name} exitosa!`, user: updatedUser.toObject() });
+  // 1. Deducir Saldo
+  user.balance.usdt -= totalCost;
 
-    } catch (error) {
-        await session.abortTransaction();
-        console.error('Error en la compra de minero:', error);
-        res.status(500).json({ message: error.message || 'Error al procesar la compra.' });
-    } finally {
-        session.endSession();
-    }
-};
+  // 2. Calcular Fechas
+  const now = new Date();
+  const expiryDate = new Date(now);
+  expiryDate.setDate(expiryDate.getDate() + miner.durationDays);
+
+  // 3. Añadir items al inventario del usuario
+  for (let i = 0; i < qty; i++) {
+    user.purchasedMiners.push({
+      miner: miner._id,
+      purchaseDate: now,
+      expiryDate: expiryDate,
+      lastClaim: now // Importante para el ciclo de 12h
+    });
+  }
+
+  // 4. Registrar Transacción
+  user.transactions.push({
+    type: 'purchase',
+    amount: totalCost,
+    currency: 'USDT',
+    description: `Compra: ${qty}x ${miner.name}`,
+    status: 'completed'
+  });
+
+  // 5. Guardar
+  await user.save();
+
+  // 6. Devolver usuario actualizado (para que el Frontend recalcule la potencia)
+  // Populate necesario para que PowerDashboard lea 'dailyProduction'
+  const updatedUser = await User.findById(user._id).populate('purchasedMiners.miner');
+  
+  res.json({
+    message: '¡Potencia Aumentada Exitosamente!',
+    user: updatedUser
+  });
+});
 
 const claimFactoryProduction = async (req, res) => {
     const { purchasedFactoryId } = req.body;

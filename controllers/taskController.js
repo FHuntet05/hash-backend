@@ -1,141 +1,167 @@
+// backend/controllers/taskController.js
 
-// RUTA: backend/controllers/taskController.js (v29.1 - "QUANTUM LEAP": 12 NIVELES DE TAREAS DEFINITIVOS)
 const asyncHandler = require('express-async-handler');
 const User = require('../models/userModel.js');
-const Miner = require('../models/minerModel.js'); 
 
-// --- INICIO DE MODIFICACIÓN CRÍTICA: NUEVA CONFIGURACIÓN DE TAREAS ---
-// La configuración anterior se elimina. Ahora solo manejaremos tareas de invitación.
-// VALORES ACTUALIZADOS SEGÚN SU DIRECTIVA.
+// --- CONFIGURACIÓN MAESTRA DE TAREAS ---
 const TASKS_CONFIG = {
-    INVITE_1: { reward: 0.01, target: 1 },    // Invita 1 amigo
-    INVITE_2: { reward: 0.03, target: 3 },    // Invita 3 amigos
-    INVITE_3: { reward: 0.05, target: 5 },    // Invita 5 amigos
-    INVITE_4: { reward: 0.1, target: 10 },   // Invita 10 amigos
-    INVITE_5: { reward: 0.3, target: 20 },   // Invita 20 amigos
-    INVITE_6: { reward: 0.5,  target: 50 },   // Invita 50 amigos
-    INVITE_7: { reward: 0.6,  target: 100 },  // Invita 100 amigos
-    INVITE_8: { reward: 0.7,  target: 150 },  // Invita 150 amigos
-    INVITE_9: { reward: 0.8,  target: 200 },  // Invita 200 amigos
-    INVITE_10: { reward: 0.9, target: 300 },  // Invita 300 amigos
-    INVITE_11: { reward: 1.00, target: 500 },  // Invita 500 amigos
-    INVITE_12: { reward: 1.50, target: 1000 }, // Invita 1000 amigos
+    // 1. TAREAS DE DEPÓSITO DE REFERIDOS (El amigo deposita X)
+    // 'target' aquí significa: Necesitas 1 amigo que cumpla la condición de dinero.
+    
+    'REF_DEP_50':  { type: 'REFERRAL_DEPOSIT', amountRequired: 50,  reward: 2,    target: 1, titleKey: 'ref_dep_50' },
+    'REF_DEP_100': { type: 'REFERRAL_DEPOSIT', amountRequired: 100, reward: 5,    target: 1, titleKey: 'ref_dep_100' },
+    'REF_DEP_200': { type: 'REFERRAL_DEPOSIT', amountRequired: 200, reward: 15,   target: 1, titleKey: 'ref_dep_200' },
+    'REF_DEP_500': { type: 'REFERRAL_DEPOSIT', amountRequired: 500, reward: 50,   target: 1, titleKey: 'ref_dep_500' },
+
+    // 2. TAREA DE DEPÓSITO PROPIO (Usuario deposita X)
+    'OWN_DEP_10':  { type: 'OWN_DEPOSIT',      amountRequired: 10,  reward: 1,    target: 10, titleKey: 'own_dep_10' }, // Target es el monto
+
+    // 3. TAREAS DE VOLUMEN DE REFERIDOS (Cantidad de invitados)
+    'INVITE_10':   { type: 'INVITE_COUNT',     amountRequired: 0,   reward: 0.1,  target: 10, titleKey: 'invite_10' },
+    'INVITE_50':   { type: 'INVITE_COUNT',     amountRequired: 0,   reward: 0.2,  target: 50, titleKey: 'invite_50' },
+    'INVITE_100':  { type: 'INVITE_COUNT',     amountRequired: 0,   reward: 0.3,  target: 100, titleKey: 'invite_100' },
+    'INVITE_200':  { type: 'INVITE_COUNT',     amountRequired: 0,   reward: 0.4,  target: 200, titleKey: 'invite_200' },
 };
 
-// El orden secuencial de las tareas de invitación es ahora fundamental.
-const INVITE_ORDER = [
-    'INVITE_1', 'INVITE_2', 'INVITE_3', 'INVITE_4', 'INVITE_5', 'INVITE_6',
-    'INVITE_7', 'INVITE_8', 'INVITE_9', 'INVITE_10', 'INVITE_11', 'INVITE_12'
+// Orden en que aparecerán en la UI
+const TASK_ORDER = [
+    'REF_DEP_50', 'REF_DEP_100', 'REF_DEP_200', 'REF_DEP_500',
+    'OWN_DEP_10',
+    'INVITE_10', 'INVITE_50', 'INVITE_100', 'INVITE_200'
 ];
-// --- FIN DE MODIFICACIÓN CRÍTICA ---
 
 const getTaskStatus = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id)
-        .select('referrals claimedTasks');
+    const userId = req.user.id;
+    const user = await User.findById(userId).select('referrals totalRecharge claimedTasks');
 
-    if (!user) {
-        res.status(404); throw new Error('Usuario no encontrado');
-    }
+    if (!user) { res.status(404); throw new Error('Usuario no encontrado'); }
 
-    const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
+    // Pre-calcular métricas para no hacer queries locas dentro del loop
+    // 1. Total de referidos directos (Nivel 1)
+    const directReferralsCount = user.referrals.filter(r => r.level === 1).length;
+
+    // 2. Referidos cualificados (Query optimizada)
+    // Buscamos cuántos referidos directos tienen depósitos acumulados
+    // NOTA: Esto requiere que 'user.referrals' tenga los IDs. 
+    // Haremos una query a la colección de Users buscando a los hijos.
+    const qualifiedReferralsStats = await User.find({ 
+        referredBy: userId 
+    }).select('totalRecharge');
 
     const responseTasks = [];
-    let lastClaimedReferralCount = 0;
 
-    // La lógica itera sobre el nuevo orden de 12 tareas.
-    for (const taskId of INVITE_ORDER) {
-        const task = TASKS_CONFIG[taskId];
+    for (const taskId of TASK_ORDER) {
+        const config = TASKS_CONFIG[taskId];
         let status = 'PENDING';
         let progress = 0;
-
-        const isClaimed = user.claimedTasks.has(taskId);
         
-        const inviteIndex = INVITE_ORDER.indexOf(taskId);
-        let previousTaskClaimed = true;
-        
-        // Verifica que la tarea anterior haya sido reclamada para desbloquear la actual
-        if (inviteIndex > 0) {
-            const previousTaskId = INVITE_ORDER[inviteIndex - 1];
-            const prevTaskData = user.claimedTasks.get(previousTaskId);
-            if (prevTaskData && prevTaskData.claimed) {
-                lastClaimedReferralCount = prevTaskData.referralCountAtClaim;
-            } else {
-                previousTaskClaimed = false;
-            }
-        }
+        // Verificar si ya está reclamada
+        const isClaimed = user.claimedTasks && user.claimedTasks.has(taskId);
 
-        if (!previousTaskClaimed) { 
-            status = 'LOCKED'; 
+        if (isClaimed) {
+            status = 'CLAIMED';
+            progress = config.target; // Visualmente lleno
         } else {
-            // El progreso se calcula sobre los referidos obtenidos DESPUÉS de reclamar la tarea anterior.
-            progress = Math.max(0, level1ReferralCount - lastClaimedReferralCount);
-            const isCompleted = progress >= task.target;
-            
-            if (isClaimed) { 
-                status = 'CLAIMED'; 
-            } else if (isCompleted) { 
-                status = 'COMPLETED_NOT_CLAIMED'; 
+            // Lógica de cálculo según tipo
+            if (config.type === 'REFERRAL_DEPOSIT') {
+                // Cuenta cuántos referidos han depositado más de 'amountRequired'
+                // Ej: Cuántos han depositado >= 50 USDT
+                const qualifiedCount = qualifiedReferralsStats.filter(
+                    child => (child.totalRecharge || 0) >= config.amountRequired
+                ).length;
+                
+                progress = qualifiedCount;
+                if (progress >= config.target) status = 'COMPLETED_NOT_CLAIMED';
+
+            } else if (config.type === 'OWN_DEPOSIT') {
+                // Progreso es el dinero depositado por el propio usuario
+                progress = user.totalRecharge || 0;
+                if (progress >= config.amountRequired) status = 'COMPLETED_NOT_CLAIMED';
+                // Ajuste visual: Para Own Deposit, el target visual es el monto requerido
+                // config.target en el JSON de arriba estaba confuso, usaremos amountRequired para display
+            } else if (config.type === 'INVITE_COUNT') {
+                // Simplemente contar referidos
+                progress = directReferralsCount;
+                if (progress >= config.target) status = 'COMPLETED_NOT_CLAIMED';
             }
         }
-        
+
+        // Ajuste final de props para el frontend
+        let displayTarget = config.target;
+        if (config.type === 'OWN_DEPOSIT') displayTarget = config.amountRequired;
+
         responseTasks.push({
             taskId,
-            reward: task.reward,
+            type: config.type,
+            reward: config.reward,
             status,
-            // CORRECCIÓN LÓGICA: El progreso ahora se muestra relativo al objetivo de la tarea actual.
-            progress: Math.min(progress, task.target),
-            target: task.target || 0,
-            actionUrl: null // Las tareas de invitación no necesitan actionUrl
+            progress: Math.min(progress, displayTarget), // Cap visual
+            target: displayTarget,
+            // Action URL opcional
+            actionUrl: config.type.includes('INVITE') || config.type.includes('REFERRAL') ? '/team' : '/deposit/select-network'
         });
     }
+
     res.json(responseTasks);
 });
 
 const claimTaskReward = asyncHandler(async (req, res) => {
     const { taskId } = req.body;
     const userId = req.user.id;
-    const taskConfig = TASKS_CONFIG[taskId];
+    const config = TASKS_CONFIG[taskId];
 
-    if (!taskConfig || !taskId.startsWith('INVITE_')) { 
-        res.status(400); throw new Error('Tarea no válida.'); 
-    }
-    
+    if (!config) { res.status(400); throw new Error('Tarea no válida.'); }
+
     const user = await User.findById(userId);
-    
-    if (!user) { res.status(404); throw new Error('Usuario no encontrado'); }
-    if (user.claimedTasks.has(taskId)) { res.status(400); throw new Error('Ya has reclamado esta recompensa.'); }
-
-    const level1ReferralCount = user.referrals.filter(r => r.level === 1).length;
-    let isCompleted = false;
-    let lastClaimedReferralCount = 0;
-
-    const inviteIndex = INVITE_ORDER.indexOf(taskId);
-    if (inviteIndex > 0) {
-        const previousTaskId = INVITE_ORDER[inviteIndex - 1];
-        const prevTaskData = user.claimedTasks.get(previousTaskId);
-        if (!prevTaskData || !prevTaskData.claimed) { 
-            res.status(400); throw new Error('Debes reclamar la recompensa de la tarea anterior primero.'); 
-        }
-        lastClaimedReferralCount = prevTaskData.referralCountAtClaim;
+    if (user.claimedTasks && user.claimedTasks.get(taskId)?.claimed) {
+        res.status(400); throw new Error('Ya has reclamado esta recompensa.');
     }
 
-    const progress = level1ReferralCount - lastClaimedReferralCount;
-    isCompleted = progress >= taskConfig.target;
-    
-    if (!isCompleted) { res.status(400); throw new Error('La tarea aún no está completada.'); }
+    // Re-verificación de seguridad (Server-side validation)
+    // Copiamos la lógica de verificación de getTaskStatus
+    let isCompleted = false;
 
-    const reward = taskConfig.reward;
-    const transaction = { type: 'task_reward', amount: reward, currency: 'USDT', description: `Recompensa de tarea: ${taskId}` };
+    if (config.type === 'REFERRAL_DEPOSIT') {
+        const qualifiedCount = await User.countDocuments({ 
+            referredBy: userId, 
+            totalRecharge: { $gte: config.amountRequired } 
+        });
+        isCompleted = qualifiedCount >= config.target;
+
+    } else if (config.type === 'OWN_DEPOSIT') {
+        isCompleted = (user.totalRecharge || 0) >= config.amountRequired;
+
+    } else if (config.type === 'INVITE_COUNT') {
+        // Contamos array de referrals level 1
+        const count = user.referrals.filter(r => r.level === 1).length;
+        isCompleted = count >= config.target;
+    }
+
+    if (!isCompleted) {
+        res.status(400); throw new Error('Requisitos no cumplidos.');
+    }
+
+    // Procesar Recompensa
+    user.balance.usdt += config.reward;
     
-    // Guardamos el número de referidos en el momento del reclamo. Esto es CRUCIAL para la lógica secuencial.
-    const taskDataToSave = { claimed: true, referralCountAtClaim: level1ReferralCount };
-    
-    user.balance.usdt += reward;
-    user.transactions.push(transaction);
-    user.claimedTasks.set(taskId, taskDataToSave);
-    
-    const updatedUser = await user.save();
-    res.json({ message: `¡Recompensa de +${reward.toFixed(3)} USDT reclamada!`, user: updatedUser });
+    // Registrar transacción
+    user.transactions.push({
+        type: 'task_reward',
+        amount: config.reward,
+        currency: 'USDT',
+        description: `Misión completada: ${taskId}`
+    });
+
+    // Marcar como reclamada
+    if (!user.claimedTasks) user.claimedTasks = new Map();
+    user.claimedTasks.set(taskId, { claimed: true, claimedAt: new Date() });
+
+    await user.save();
+
+    res.json({ 
+        message: `¡+${config.reward} USDT Recibidos!`, 
+        user: { balance: user.balance, claimedTasks: user.claimedTasks } // Devolver datos parciales
+    });
 });
 
 module.exports = {
