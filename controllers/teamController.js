@@ -2,78 +2,94 @@
 
 const asyncHandler = require('express-async-handler');
 const User = require('../models/userModel');
-const mongoose = require('mongoose');
 
-// --- ESTADÍSTICAS GENERALES (Cabecera TeamPage) ---
-const getTeamStats = asyncHandler(async (req, res) => {
-    const userId = req.user.id;
-    const user = await User.findById(userId);
+/**
+ * Función auxiliar para obtener la estructura completa del árbol de referidos
+ * Buscando en tiempo real en la base de datos para garantizar precisión.
+ */
+const getDownlineTree = async (rootUserId) => {
+    // 1. NIVEL 1: Buscar usuarios donde 'referredBy' sea el ID del usuario actual
+    const level1Users = await User.find({ referredBy: rootUserId })
+                                  .select('_id username telegramId createdAt totalRecharge totalCommission photoFileId')
+                                  .lean();
+    
+    const level1Ids = level1Users.map(u => u._id);
 
-    if (!user) { 
-        res.status(404); throw new Error("Usuario no encontrado"); 
+    // 2. NIVEL 2: Buscar usuarios donde 'referredBy' sea cualquiera de los del Nivel 1
+    let level2Users = [];
+    let level2Ids = [];
+    if (level1Ids.length > 0) {
+        level2Users = await User.find({ referredBy: { $in: level1Ids } })
+                                .select('_id username telegramId createdAt totalRecharge totalCommission photoFileId')
+                                .lean();
+        level2Ids = level2Users.map(u => u._id);
     }
 
-    // Cálculo rápido de contadores por nivel desde el array local
-    const level1Count = user.referrals.filter(r => r.level === 1).length;
-    const level2Count = user.referrals.filter(r => r.level === 2).length;
-    const level3Count = user.referrals.filter(r => r.level === 3).length;
+    // 3. NIVEL 3: Buscar usuarios donde 'referredBy' sea cualquiera de los del Nivel 2
+    let level3Users = [];
+    if (level2Ids.length > 0) {
+        level3Users = await User.find({ referredBy: { $in: level2Ids } })
+                                .select('_id username telegramId createdAt totalRecharge totalCommission photoFileId')
+                                .lean();
+    }
 
-    // Suma de comisiones
-    // NOTA: Para una suma exacta por nivel, se debería recorrer user.transactions filtando por tipo 'referral_commission'.
-    // Aquí usamos totalCommission global para simplicidad, o desglosamos si es necesario.
-    const totalCommission = user.totalCommission || 0;
+    return { level1Users, level2Users, level3Users };
+};
+
+// --- ESTADÍSTICAS (DASHBOARD DE EQUIPO) ---
+const getTeamStats = asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    const user = await User.findById(userId); // Para obtener la comisión total global del usuario
+
+    // Usamos la búsqueda robusta
+    const { level1Users, level2Users, level3Users } = await getDownlineTree(userId);
+
+    const totalMembers = level1Users.length + level2Users.length + level3Users.length;
+
+    // Nota: La 'commission' desglosada por nivel aquí es un estimado si no usamos aggregation pipelines complejos.
+    // Para simplificar y que funcione rápido, mostraremos la estructura de miembros correcta.
+    // El frontend recibe el totalCommission global del usuario.
 
     res.json({
-        totalTeamMembers: user.referrals.length,
-        totalCommission: totalCommission,
+        totalTeamMembers: totalMembers,
+        totalCommission: user.totalCommission || 0,
         levels: [
-            { level: 1, totalMembers: level1Count, totalCommission: 0 }, // TODO: Implementar desglose fino si se requiere
-            { level: 2, totalMembers: level2Count, totalCommission: 0 },
-            { level: 3, totalMembers: level3Count, totalCommission: 0 }
+            { level: 1, totalMembers: level1Users.length, totalCommission: 0 },
+            { level: 2, totalMembers: level2Users.length, totalCommission: 0 },
+            { level: 3, totalMembers: level3Users.length, totalCommission: 0 }
         ]
     });
 });
 
-// --- DETALLES POR NIVEL (Lista TeamPage) ---
+// --- DETALLES DE LA LISTA (AL SELECCIONAR UN TAB) ---
 const getLevelDetails = asyncHandler(async (req, res) => {
     const level = parseInt(req.params.level);
     const userId = req.user.id;
 
-    // 1. Obtener al usuario padre
-    const currentUser = await User.findById(userId).select('referrals');
-    
-    if (!currentUser) return res.json({ members: [] });
+    const { level1Users, level2Users, level3Users } = await getDownlineTree(userId);
 
-    // 2. Filtrar los IDs de los usuarios que están en el nivel solicitado
-    const referralIdsInLevel = currentUser.referrals
-        .filter(ref => ref.level === level)
-        .map(ref => ref.user);
+    let targetMembers = [];
 
-    if (referralIdsInLevel.length === 0) {
-        return res.json({ members: [] });
-    }
+    if (level === 1) targetMembers = level1Users;
+    else if (level === 2) targetMembers = level2Users;
+    else if (level === 3) targetMembers = level3Users;
 
-    // 3. Buscar DATOS REALES de esos hijos (Fix Lista Vacía)
-    // Traemos username, fecha de ingreso y su propio total recargado (como indicador)
-    const members = await User.find({
-        '_id': { $in: referralIdsInLevel }
-    })
-    .select('username telegramId createdAt totalRecharge photoFileId')
-    .lean();
+    // Mapeamos los datos para el frontend
+    // NOTA: 'commissionGenerated' es cuánto TE generó este usuario.
+    // Calcular esto históricamente requiere sumar transacciones. 
+    // Como fallback rápido usamos un valor indicativo o 0 para no romper la vista.
+    const formattedMembers = targetMembers.map(member => ({
+        _id: member._id,
+        username: member.username || `ID: ${member.telegramId}`,
+        telegramId: member.telegramId,
+        createdAt: member.createdAt,
+        // Puedes mostrar 'totalRecharge' para saber si es un usuario activo que invierte
+        totalRecharge: member.totalRecharge || 0, 
+        commissionGenerated: 0 // Cálculo complejo pendiente, se deja en 0 para estabilidad visual
+    }));
 
-    // 4. Mapear para respuesta limpia
-    const formattedMembers = members.map(member => {
-        // Aquí intentamos calcular cuánto nos generó este usuario
-        // Como optimización, por ahora enviamos 0 o un cálculo estimado
-        // Lo importante es que aparezca en la lista
-        return {
-            _id: member._id,
-            username: member.username || `User ${member.telegramId.substring(0,6)}...`,
-            telegramId: member.telegramId,
-            createdAt: member.createdAt,
-            commissionGenerated: 0 // Se podría cruzar con transactions del padre
-        };
-    });
+    // Ordenar por fecha, más nuevos primero
+    formattedMembers.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     res.json({ members: formattedMembers });
 });
