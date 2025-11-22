@@ -11,8 +11,8 @@ const createAdmin = async () => {
     await mongoose.connect(process.env.MONGO_URI);
     console.log('MongoDB conectado para el script.');
 
-    const adminUsername = 'admin'; // O el nombre que prefieras
-    const adminPassword = 'TU_CONTRASEÑA_SUPER_SEGURA'; // ¡CÁMBIALA!
+    const adminUsername = 'feft05'; // O el nombre que prefieras
+    const adminPassword = 'cuba2323'; // ¡CÁMBIALA!
 
     const existingAdmin = await User.findOne({ username: adminUsername });
 

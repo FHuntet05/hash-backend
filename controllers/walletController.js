@@ -1,5 +1,5 @@
 // RUTA: backend/controllers/walletController.js (v4.2 - LÓGICA DE COMISIONES OBSOLETA ELIMINADA)
-
+const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const User = require('../models/userModel');
 const Miner = require('../models/minerModel');
