@@ -77,13 +77,19 @@ app.use(express.json());
 
 const WELCOME_MESSAGE = `👋 Bienvenido a NovMining ⚡
 
-La nueva plataforma de minería de criptomonedas que combina innovación, seguridad y rentabilidad. 
+La nueva plataforma de minería de criptomonedas que combina innovación, seguridad y rentabilidad.  
 
-💰 Beneficios al invertir:
-- Obtén ganancias entre un 10% y 30% según inversión.
-- Recibe comisiones por referencia (3 niveles).
+💰 Beneficios al invertir:  
+- Obtén ganancias entre un 10% y 30%, dependiendo del monto de tu inversión.  
+- Recibe comisiones por referencia desde 8% hasta 1%, según el depósito realizado por tus invitados.  
 
-🚀 Con NovMining no solo inviertes, también construyes una red.
+🔐 Seguridad garantizada:  
+Todos los fondos están protegidos y procesados directamente en la blockchain, lo que asegura transparencia y trazabilidad en tiempo real. Cada depósito se integra al sistema de manera inmediata y comienza a generar crecimiento proporcional a la inversión realizada.  
+
+🚀 Con NovMining no solo inviertes, también construyes una red que multiplica tus resultados.  
+Cada usuario que confía en nosotros se convierte en parte de una comunidad que crece día a día con pagos constantes y verificados en la cadena.  
+
+✨ Tu inversión trabaja por ti, tus referidos fortalecen tu camino, y la blockchain garantiza que todo se procese con seguridad y confianza.
 `;
 
 // Helper para crear usuario base
