@@ -75,18 +75,21 @@ app.use(express.json());
 // 3. LÓGICA DEL BOT TELEGRAM
 // ==================================================================
 
-const WELCOME_MESSAGE = `
-<b>Welcome to NovMining</b> 🚀
+const WELCOME_MESSAGE = `👋 Bienvenido a NovMining ⚡
 
-NovMining is a next-generation cloud mining platform where you can rent hash power to generate USDT daily.
+La nueva plataforma de minería de criptomonedas que combina innovación, seguridad y rentabilidad. 
 
-<b>How it works:</b>
-• Acquire Power Modules (GH/s).
-• The system mines automatically 24/7.
-• Claim your earnings every 12 hours.
-• Withdraw directly to your wallet.
+💰 Beneficios al invertir:
+- Obtén ganancias entre un 10% y 30%, dependiendo del monto de tu inversión.
+- Recibe comisiones por referencia desde 8% hasta 1%, según el depósito realizado por tus invitados 
 
-Start today and build your mining empire! 👇
+🔐 Seguridad garantizada:
+Todos los fondos están protegidos y procesados directamente en la blockchain, lo que asegura transparencia y trazabilidad en tiempo real. Cada depósito se integra al sistema de manera inmediata y comienza a generar crecimiento proporcional a la inversión realizada. 
+
+🚀 Con NovMining no solo inviertes, también construyes una red que multiplica tus resultados. 
+Cada usuario que confía en nosotros se convierte en parte de una comunidad que crece día a día con pagos constantes y verificados en la cadena.
+
+✨ Tu inversión trabaja por ti, tus referidos fortalecen tu camino, y la blockchain garantiza que todo se procese con seguridad y confianza.
 `;
 
 const handleNewUserCreation = async (ctx) => {
@@ -160,13 +163,13 @@ bot.command('start', async (ctx) => {
 
         // Respuesta al Usuario (Blindada contra errores de bloqueo)
         try {
-            const imageUrl = 'https://ibb.co/Pvxvn51m'; // Tu imagen
+            const imageUrl = 'https://i.postimg.cc/W48w0986/photo-2025-11-22-14-02-02.jpg'; // Tu imagen
             await ctx.replyWithPhoto(imageUrl, {
                 caption: WELCOME_MESSAGE,
                 parse_mode: 'HTML',
                 reply_markup: {
                     inline_keyboard: [[
-                        Markup.button.webApp('💎 AUMENTAR POTENCIA', process.env.FRONTEND_URL)
+                        Markup.button.webApp('💎 EMPEZAR A GANAR', process.env.FRONTEND_URL)
                     ]]
                 }
             });
