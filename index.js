@@ -24,7 +24,7 @@ const treasuryRoutes = require('./routes/treasuryRoutes');
 const userRoutes = require('./routes/userRoutes');
 const minerRoutes = require('./routes/minerRoutes');
 
-console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA v12.0 (Webhook Manual)...'.cyan.bold);
+console.log('[SISTEMA] Iniciando aplicación MEGA FÁBRICA v13.0 (Ref System Fix)...'.cyan.bold);
 dotenv.config();
 
 // 1. Verificación de Entorno
@@ -59,6 +59,8 @@ const corsOptions = {
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
+            // Permitir peticiones sin origen (como curl o postman local en desarrollo)
+            // callback(null, true); 
             console.warn(`[CORS] Origen bloqueado: ${origin}`);
             callback(new Error('No permitido por CORS'));
         }
@@ -67,12 +69,10 @@ const corsOptions = {
     credentials: true,
 };
 app.use(cors(corsOptions));
-
-// Middleware para parsear JSON (Vital para el Webhook)
 app.use(express.json());
 
 // ==================================================================
-// 3. LÓGICA DEL BOT TELEGRAM
+// 3. LÓGICA DEL BOT TELEGRAM (CORREGIDA Y ROBUSTA)
 // ==================================================================
 
 const WELCOME_MESSAGE = `👋 Bienvenido a NovMining ⚡
@@ -80,24 +80,17 @@ const WELCOME_MESSAGE = `👋 Bienvenido a NovMining ⚡
 La nueva plataforma de minería de criptomonedas que combina innovación, seguridad y rentabilidad. 
 
 💰 Beneficios al invertir:
-- Obtén ganancias entre un 10% y 30%, dependiendo del monto de tu inversión.
-- Recibe comisiones por referencia desde 8% hasta 1%, según el depósito realizado por tus invitados 
+- Obtén ganancias entre un 10% y 30% según inversión.
+- Recibe comisiones por referencia (3 niveles).
 
-🔐 Seguridad garantizada:
-Todos los fondos están protegidos y procesados directamente en la blockchain, lo que asegura transparencia y trazabilidad en tiempo real. Cada depósito se integra al sistema de manera inmediata y comienza a generar crecimiento proporcional a la inversión realizada. 
-
-🚀 Con NovMining no solo inviertes, también construyes una red que multiplica tus resultados. 
-Cada usuario que confía en nosotros se convierte en parte de una comunidad que crece día a día con pagos constantes y verificados en la cadena.
-
-✨ Tu inversión trabaja por ti, tus referidos fortalecen tu camino, y la blockchain garantiza que todo se procese con seguridad y confianza.
+🚀 Con NovMining no solo inviertes, también construyes una red.
 `;
 
-const handleNewUserCreation = async (ctx) => {
-    const referredId = ctx.from.id.toString();
-    console.log(`[Bot] Creando nuevo usuario: ${referredId}`);
-    
-    const username = ctx.from.username || `user_${referredId}`;
-    const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
+// Helper para crear usuario base
+const createUserInternal = async (telegramCtx) => {
+    const referredId = telegramCtx.from.id.toString();
+    const username = telegramCtx.from.username || `user_${referredId}`;
+    const fullName = `${telegramCtx.from.first_name || ''} ${telegramCtx.from.last_name || ''}`.trim();
 
     const initialMiners = [];
     // Buscar minero gratuito
@@ -107,63 +100,94 @@ const handleNewUserCreation = async (ctx) => {
         const now = new Date();
         const expiry = new Date(now);
         expiry.setDate(expiry.getDate() + freeMiner.durationDays);
-        
         initialMiners.push({ 
             miner: freeMiner._id, 
             purchaseDate: now, 
             expiryDate: expiry, 
             lastClaim: now 
         });
-        console.log(`[Bot] Minero gratuito asignado: ${freeMiner.name}`);
     }
 
     const newUser = new User({ 
         telegramId: referredId, 
         username, 
         fullName: fullName || username, 
-        language: ctx.from.language_code || 'es',
+        language: telegramCtx.from.language_code || 'es',
         purchasedMiners: initialMiners
     });
     
     await newUser.save();
+    console.log(`[DB] Usuario creado: ${newUser.username} (${newUser._id})`);
     return newUser;
 };
 
 bot.command('start', async (ctx) => {
     try {
         const telegramId = ctx.from.id.toString();
-        const referrerCode = ctx.startPayload || null; // Parámetro tras /start
-
-        console.log(`[Bot] /start de ${telegramId}. Referente: ${referrerCode}`);
-
-        let user = await User.findOne({ telegramId });
         
-        if (!user) {
-            user = await handleNewUserCreation(ctx);
-        }
-
-        // Lógica de Referidos
-        if (referrerCode && referrerCode !== telegramId && !user.referredBy) {
-            const referrer = await User.findOne({ referralCode: referrerCode }) || await User.findOne({ telegramId: referrerCode });
-            
-            if (referrer) {
-                user.referredBy = referrer._id;
-                
-                // Añadir a la lista del padre si no existe
-                const alreadyReferral = referrer.referrals.some(r => r.user.toString() === user._id.toString());
-                if (!alreadyReferral) {
-                    referrer.referrals.push({ level: 1, user: user._id });
-                    await referrer.save();
-                }
-                
-                await user.save();
-                console.log(`[Bot] Usuario ${telegramId} referido por ${referrer.username}`);
+        // 1. EXTRACCIÓN ROBUSTA DEL PAYLOAD (ID DEL REFERENTE)
+        // Probamos ctx.startPayload, o buscamos manualmente en el texto del mensaje "/start 12345"
+        let referrerCode = ctx.startPayload;
+        if (!referrerCode && ctx.message && ctx.message.text) {
+            const parts = ctx.message.text.split(' ');
+            if (parts.length > 1) {
+                referrerCode = parts[1].trim();
             }
         }
 
-        // Respuesta al Usuario (Blindada contra errores de bloqueo)
+        console.log(`🔹 [BOT /START] User: ${telegramId} | Payload Referente detectado: "${referrerCode || 'Ninguno'}"`);
+
+        // 2. Buscar usuario o crear
+        let user = await User.findOne({ telegramId });
+        
+        if (!user) {
+            console.log(`[BOT] Usuario nuevo detectado.`);
+            user = await createUserInternal(ctx);
+        } else {
+            console.log(`[BOT] Usuario existente.`);
+        }
+
+        // 3. LÓGICA DE REFERIDOS (Sólo si tiene código, no es él mismo y no tiene padre aún)
+        if (referrerCode && referrerCode !== telegramId && !user.referredBy) {
+            console.log(`[REFERRAL] Intentando vincular con el padre ID: ${referrerCode}`);
+            
+            // Buscamos al padre por telegramId
+            const referrerUser = await User.findOne({ telegramId: referrerCode });
+            
+            if (referrerUser) {
+                // A) Guardar en el HIJO quien es su padre
+                user.referredBy = referrerUser._id;
+                await user.save();
+
+                // B) Guardar en el PADRE quien es su hijo (Si no está ya)
+                const alreadyChild = referrerUser.referrals.some(ref => ref.user.toString() === user._id.toString());
+                
+                if (!alreadyChild) {
+                    referrerUser.referrals.push({
+                        level: 1,
+                        user: user._id,
+                        createdAt: new Date()
+                    });
+                    await referrerUser.save();
+                    console.log(`✅ [REFERRAL EXITOSO] ${referrerUser.username} ahora es padre de ${user.username}`);
+                    
+                    // Opcional: Avisar al padre
+                    try {
+                        await ctx.telegram.sendMessage(referrerCode, `🎉 <b>¡Nuevo Referido!</b>\n\nEl usuario <b>${user.username}</b> se ha unido a tu equipo.`, { parse_mode: 'HTML' });
+                    } catch(e) {}
+                } else {
+                    console.log(`[REFERRAL] Ya estaban vinculados.`);
+                }
+            } else {
+                console.warn(`⚠️ [REFERRAL] El código de referido "${referrerCode}" no corresponde a ningún usuario existente.`);
+            }
+        } else if (user.referredBy) {
+            console.log(`[REFERRAL] Este usuario ya tenía padre (ID: ${user.referredBy}).`);
+        }
+
+        // 4. RESPUESTA DE BIENVENIDA
         try {
-            const imageUrl = 'https://i.postimg.cc/W48w0986/photo-2025-11-22-14-02-02.jpg'; // Tu imagen
+            const imageUrl = 'https://i.postimg.cc/W48w0986/photo-2025-11-22-14-02-02.jpg';
             await ctx.replyWithPhoto(imageUrl, {
                 caption: WELCOME_MESSAGE,
                 parse_mode: 'HTML',
@@ -174,26 +198,23 @@ bot.command('start', async (ctx) => {
                 }
             });
         } catch (replyError) {
-            if (replyError.response && replyError.response.error_code === 403) {
-                console.warn(`[Bot] Usuario ${telegramId} ha bloqueado al bot. No se pudo responder.`);
-            } else {
-                console.error('[Bot] Error respondiendo:', replyError);
+            if (replyError?.response?.error_code !== 403) {
+                console.error('[BOT Reply Error]', replyError.message);
             }
         }
 
     } catch (error) {
-        console.error('[Bot] Error fatal en /start:', error);
+        console.error('❌ [BOT FATAL ERROR] en /start:', error);
     }
 });
 
 // ==================================================================
-// 4. CONFIGURACIÓN DEL SERVIDOR Y WEBHOOK MANUAL
+// 4. CONFIGURACIÓN SERVIDOR (Webhook Manual)
 // ==================================================================
 
 const PORT = process.env.PORT || 5000;
 const WEBHOOK_PATH = '/api/telegram-webhook';
 
-// A) Montar rutas de API normales
 const apiRouter = express.Router();
 apiRouter.use('/auth', authRoutes);
 apiRouter.use('/ranking', rankingRoutes);
@@ -208,40 +229,31 @@ apiRouter.use('/miners', minerRoutes);
 
 app.use('/api', apiRouter);
 
-// B) Endpoint del Webhook (Manual)
 app.post(WEBHOOK_PATH, async (req, res) => {
-    // 1. Validar Secreto (Si existe en .env)
+    // 1. Validar Secreto (Si existe)
     const secretHeader = req.headers['x-telegram-bot-api-secret-token'];
     if (process.env.TELEGRAM_WEBHOOK_SECRET && secretHeader !== process.env.TELEGRAM_WEBHOOK_SECRET) {
-        console.warn('[Webhook] Acceso denegado: Secreto incorrecto.');
         return res.status(403).send('Forbidden');
     }
-
-    // 2. Procesar actualización
+    // 2. Procesar
     try {
         await bot.handleUpdate(req.body, res);
         if (!res.headersSent) res.status(200).send('OK');
     } catch (err) {
-        console.error('[Webhook] Error procesando update:', err);
-        // Siempre responder 200 a Telegram para que no reintente infinitamente errores lógicos
-        if (!res.headersSent) res.status(200).send('Error handled');
+        console.error('[Webhook] Error interno:', err);
+        if (!res.headersSent) res.status(200).send('Handled with error');
     }
 });
 
-// C) Endpoint raíz
-app.get('/', (req, res) => res.send('NovMining Backend v12.0 Online 🟢'));
+app.get('/', (req, res) => res.send('Backend Online v13.0 🟢'));
 
-// 5. Manejo de Errores Global
 app.use(notFound);
 app.use(errorHandler);
 
-// 6. Iniciar todo
 if (require.main === module) {
     app.listen(PORT, async () => {
-        console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-        console.log(`📡 Esperando Webhook en: ${WEBHOOK_PATH}`);
-        
-        // Iniciar monitor de transacciones
+        console.log(`🚀 Server port: ${PORT}`);
+        console.log(`📡 Webhook endpoint: ${WEBHOOK_PATH}`);
         startMonitoring();
     });
 }
