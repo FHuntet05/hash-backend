@@ -6,7 +6,7 @@ const TASKS_CONFIG = {
     // TAREAS SOCIALES (Requieren acción externa)
     'JOIN_GROUP': { 
         type: 'SOCIAL_LINK', 
-        reward: 0.5, 
+        reward: 0.1, 
         target: 1, 
         actionUrl: 'https://t.me/TU_GRUPO_CHAT' // <--- PON TU LINK REAL AQUI
     },
@@ -18,7 +18,7 @@ const TASKS_CONFIG = {
     'REF_DEP_500': { type: 'REFERRAL_DEPOSIT', amountRequired: 500, reward: 50,   target: 1 },
 
     // OTRAS
-    'OWN_DEP_10':  { type: 'OWN_DEPOSIT',      amountRequired: 10,  reward: 1,    target: 10 },
+    'OWN_DEP_10':  { type: 'OWN_DEPOSIT',      amountRequired: 10,  reward: 0.5,    target: 10 },
     'INVITE_10':   { type: 'INVITE_COUNT',     amountRequired: 0,   reward: 0.1,  target: 10 },
     'INVITE_50':   { type: 'INVITE_COUNT',     amountRequired: 0,   reward: 0.2,  target: 50 },
     'INVITE_100':  { type: 'INVITE_COUNT',     amountRequired: 0,   reward: 0.3,  target: 100 },
