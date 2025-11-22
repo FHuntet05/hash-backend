@@ -4,12 +4,6 @@ const User = require('../models/userModel.js');
 // Configuración: Tipos de tarea, recompensas y requisitos
 const TASKS_CONFIG = {
     // TAREAS SOCIALES (Requieren acción externa)
-    'JOIN_CHANNEL': { 
-        type: 'SOCIAL_LINK', 
-        reward: 0.5, 
-        target: 1, 
-        actionUrl: 'https://t.me/TU_CANAL_NOTICIAS' // <--- PON TU LINK REAL AQUI
-    },
     'JOIN_GROUP': { 
         type: 'SOCIAL_LINK', 
         reward: 0.5, 
