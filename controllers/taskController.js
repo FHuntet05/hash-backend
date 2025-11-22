@@ -8,7 +8,7 @@ const TASKS_CONFIG = {
         type: 'SOCIAL_LINK', 
         reward: 0.1, 
         target: 1, 
-        actionUrl: 'https://t.me/TU_GRUPO_CHAT' // <--- PON TU LINK REAL AQUI
+        actionUrl: 'https://t.me/Nov_MiningGrup' // <--- PON TU LINK REAL AQUI
     },
 
     // TAREAS DE DEPÓSITO (Lógica financiera real)
