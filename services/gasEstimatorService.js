@@ -13,8 +13,8 @@ const USDT_BSC_ABI = [
 
 const bscProvider = new ethers.providers.JsonRpcProvider(process.env.ANKR_BSC_RPC_URL); // Usamos la variable de entorno ANKR para el RPC.
 
-const MIN_BSC_GAS_PRICE_GWEI = 7;
-const MIN_BSC_GAS_PRICE_WEI = ethers.BigNumber.from('3000000000'); // 5 Gwei en Wei (Formato robusto)
+const MIN_BSC_GAS_PRICE_GWEI = 7.5;
+const MIN_BSC_GAS_PRICE_WEI = ethers.BigNumber.from('7000000000'); // 5 Gwei en Wei (Formato robusto)
 
 /**
  * Estima el costo en BNB para barrer una cantidad de USDT desde una dirección.
