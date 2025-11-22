@@ -37,7 +37,41 @@ const updateUser = asyncHandler(async (req, res) => { const { username, password
 const setUserStatus = asyncHandler(async (req, res) => { const user = await User.findById(req.params.id); if (!user) { res.status(404); throw new Error('Usuario no encontrado.'); } if (user._id.equals(req.user._id)) { res.status(400); throw new Error('No puedes cambiar tu propio estado.'); } user.status = req.body.status; const updatedUser = await user.save(); res.json(updatedUser); });
 const createManualTransaction = asyncHandler(async (req, res) => { res.status(501).json({ message: 'Funcionalidad obsoleta y deshabilitada.' }); });
 const getSettings = asyncHandler(async (req, res) => { const settings = await Setting.getSettings(); res.json(settings); });
-const updateSettings = asyncHandler(async (req, res) => { const { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 } = req.body; const settingsToUpdate = { maintenanceMode, withdrawalsEnabled, minWithdrawal, withdrawalFeePercent, forcePurchaseOnAllWithdrawals, commissionLevel1, commissionLevel2, commissionLevel3 }; const updatedSettings = await Setting.findByIdAndUpdate( 'global_settings', settingsToUpdate, { new: true, upsert: true, runValidators: true } ); res.json(updatedSettings); });
+const updateSettings = asyncHandler(async (req, res) => {
+    // 1. Buscar configuración o crearla si no existe
+    let settings = await Setting.findOne({ _id: 'global_settings' });
+    if (!settings) {
+        settings = new Setting({ _id: 'global_settings' });
+    }
+
+    // 2. Actualizar campos simples
+    if (req.body.minWithdrawal !== undefined) settings.minWithdrawal = Number(req.body.minWithdrawal);
+    if (req.body.withdrawalFeePercent !== undefined) settings.withdrawalFeePercent = Number(req.body.withdrawalFeePercent);
+    if (req.body.maintenanceMode !== undefined) settings.maintenanceMode = req.body.maintenanceMode;
+    if (req.body.maintenanceMessage) settings.maintenanceMessage = req.body.maintenanceMessage;
+    if (req.body.withdrawalsEnabled !== undefined) settings.withdrawalsEnabled = req.body.withdrawalsEnabled;
+    if (req.body.forcePurchaseOnAllWithdrawals !== undefined) settings.forcePurchaseOnAllWithdrawals = req.body.forcePurchaseOnAllWithdrawals;
+
+    // 3. ACTUALIZACIÓN CRÍTICA: OBJETO DE REFERIDOS
+    // Verificamos si el frontend envió referralPercentages
+    if (req.body.referralPercentages) {
+        settings.referralPercentages = {
+            level1: parseFloat(req.body.referralPercentages.level1) || 0,
+            level2: parseFloat(req.body.referralPercentages.level2) || 0,
+            level3: parseFloat(req.body.referralPercentages.level3) || 0,
+        };
+    } else {
+        // Soporte legacy por si se envían campos sueltos
+        if (req.body.commissionLevel1 !== undefined) settings.referralPercentages.level1 = parseFloat(req.body.commissionLevel1);
+        if (req.body.commissionLevel2 !== undefined) settings.referralPercentages.level2 = parseFloat(req.body.commissionLevel2);
+        if (req.body.commissionLevel3 !== undefined) settings.referralPercentages.level3 = parseFloat(req.body.commissionLevel3);
+    }
+
+    const updatedSettings = await settings.save();
+    console.log(`[Settings] Configuración global actualizada por ${req.user.username}`);
+    
+    res.json(updatedSettings);
+});
 const generateTwoFactorSecret = asyncHandler(async (req, res) => { const secret = speakeasy.generateSecret({ name: `MegaFabrica Admin (${req.user.username})` }); await User.findByIdAndUpdate(req.user.id, { twoFactorSecret: secret.base32 }); const data_url = await qrCodeToDataURLPromise(secret.otpauth_url); res.json({ secret: secret.base32, qrCodeUrl: data_url }); });
 const verifyAndEnableTwoFactor = asyncHandler(async (req, res) => { const { token } = req.body; const user = await User.findById(req.user.id).select('+twoFactorSecret'); if (!user || !user.twoFactorSecret) return res.status(400).json({ message: 'No se ha generado un secreto 2FA.' }); const verified = speakeasy.totp.verify({ secret: user.twoFactorSecret, encoding: 'base32', token }); if (verified) { user.isTwoFactorEnabled = true; await user.save(); res.json({ message: '¡2FA habilitado!' }); } else { res.status(400).json({ message: 'Token inválido.' }); }});
 const getWalletBalance = asyncHandler(async (req, res) => { const { address, chain } = req.body; if (!address || !chain) { res.status(400); throw new Error('Se requiere address y chain'); } try { const balances = await _getBalancesForAddress(address, chain); res.json({ success: true, balances }); } catch (error) { res.status(500).json({ success: false, message: error.message }); }});
