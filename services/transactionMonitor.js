@@ -9,7 +9,7 @@ const { distributeCommission } = require('./referralService');
 const USDT_CONTRACT_BSC = '0x55d398326f99059fF775485246999027B3197955';
 
 // CAMBIO 1: Batch size reducido para nodos públicos (más lento pero más seguro)
-const BATCH_SIZE_BSC = 50; 
+const BATCH_SIZE_BSC = 500; 
 
 // Verificación básica
 const rpcUrl = process.env.ANKR_BSC_RPC_URL;
