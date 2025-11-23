@@ -7,20 +7,19 @@ const { sendTelegramMessage } = require('./notificationService');
 const { distributeCommission } = require('./referralService');
 
 const USDT_CONTRACT_BSC = '0x55d398326f99059fF775485246999027B3197955';
-const BATCH_SIZE_BSC = 200; 
 
-// 1. DEBUG: Verificar si la variable llega (Sin mostrarla toda por seguridad)
+// CAMBIO 1: Batch size reducido para nodos públicos (más lento pero más seguro)
+const BATCH_SIZE_BSC = 50; 
+
+// Verificación básica
 const rpcUrl = process.env.ANKR_BSC_RPC_URL;
 if (!rpcUrl) {
-    console.error("[MONITOR] ❌ ERROR: La variable ANKR_BSC_RPC_URL está vacía.");
+    console.error("[MONITOR] ❌ ERROR FATAL: ANKR_BSC_RPC_URL no definida.");
 } else {
-    // Muestra los primeros 15 caracteres para que confirmes en logs si es la correcta
-    console.log(`[MONITOR] Configurando RPC: ${rpcUrl.substring(0, 15)}...`);
+    console.log(`[MONITOR] RPC Activo: ${rpcUrl.substring(0, 15)}...`);
 }
 
-// 2. CONFIGURACIÓN BLINDADA (StaticJsonRpcProvider)
-// Usamos Static para evitar que ethers intente adivinar la red y falle por timeouts.
-// Forzamos ChainID 56 (Binance Smart Chain Mainnet).
+// Proveedor Estático (Evita autodetección que falla en serverless)
 let provider;
 try {
     provider = new ethers.providers.StaticJsonRpcProvider(rpcUrl, {
@@ -28,31 +27,35 @@ try {
         chainId: 56
     });
 } catch (e) {
-    console.error("[MONITOR] Error fatal al instanciar StaticProvider:", e.message);
+    console.error("[MONITOR] Error provider:", e.message);
 }
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- PROCESAR DEPÓSITO INDIVIDUAL ---
+// --- PROCESAMIENTO DE DEPÓSITO ---
 async function processDeposit(txHash, blockNumber, fromAddress, toAddress, rawAmount, wallet) {
     try {
+        // Evitar duplicados
         const existingTx = await User.findOne({ 'transactions.metadata.txid': txHash });
-        if (existingTx) return; 
+        if (existingTx) {
+            console.log(`🔸 [Monitor] TX Repetida: ${txHash}`);
+            return; 
+        }
 
         const amountInUSDT = parseFloat(rawAmount);
         
-        // Filtro anti-spam (>= 0.5 USDT para evitar polvo)
+        // Ignorar micro-dust (< 0.5 USDT)
         if (amountInUSDT < 0.5) return;
 
-        console.log(`💰 [MONITOR DETECTADO] TX: ${txHash} | ${amountInUSDT} USDT -> ${wallet.address}`);
+        console.log(`💰 [CRÍTICO] DINERO DETECTADO: ${amountInUSDT} USDT -> ${wallet.address} (TX: ${txHash})`);
 
         const user = await User.findById(wallet.user);
         if (!user) {
-            console.error(`[Monitor] ❌ Error: Wallet huérfana ${wallet.address}`);
+            console.error(`[Monitor] ❌ ERROR: Wallet ${wallet.address} sin usuario asignado.`);
             return;
         }
 
-        // Lógica de Transacción
+        // Lógica de negocio
         const newTransaction = {
             type: 'deposit',
             amount: amountInUSDT,
@@ -69,27 +72,24 @@ async function processDeposit(txHash, blockNumber, fromAddress, toAddress, rawAm
             createdAt: new Date()
         };
 
-        // Actualizar Saldos
+        // Actualización Atómica
         user.balance.usdt = (user.balance.usdt || 0) + amountInUSDT;
         user.totalRecharge = (user.totalRecharge || 0) + amountInUSDT;
         user.transactions.push(newTransaction);
         
         await user.save();
-        console.log(`✅ [Monitor] Acreditado a ${user.username || user.telegramId}.`);
+        console.log(`✅ [Monitor] Saldo aplicado a: ${user.username || user.telegramId}`);
 
-        // Eventos asíncronos
+        // Notificaciones (Fire & Forget)
         if (user.telegramId) {
-            sendTelegramMessage(user.telegramId, `✅ <b>¡Depósito Recibido!</b>\n\n+${amountInUSDT.toFixed(2)} USDT agregados.`)
-                .catch(e => console.error("Error notificación:", e.message));
+            sendTelegramMessage(user.telegramId, `✅ <b>¡Depósito Recibido!</b>\n\n+${amountInUSDT.toFixed(2)} USDT agregados.`).catch(()=>{});
         }
-
         if (user.referredBy) {
-            distributeCommission(user, amountInUSDT)
-                .catch(e => console.error("Error comisiones:", e.message));
+            distributeCommission(user, amountInUSDT).catch(console.error);
         }
 
     } catch (error) {
-        console.error(`[Monitor] ❌ Error en TX ${txHash}:`, error);
+        console.error(`[Monitor] ❌ Error procesando TX:`, error);
     }
 }
 
@@ -98,101 +98,105 @@ async function getCurrentBscBlock() {
     try {
         return await provider.getBlockNumber();
     } catch (error) {
-        // Si esto falla, la RPC está caída o mal configurada
-        console.error("[Monitor] 🔴 Fallo RPC al obtener bloque:", error.message);
+        console.error("[Monitor] Fallo RPC (getBlockNumber):", error.message);
         return null;
     }
 }
 
+// Escaneo de rango
 async function scanBscBlockRange(wallet, startBlock, endBlock) {
     if (!provider) return false;
 
-    const filter = {
-        address: USDT_CONTRACT_BSC,
-        fromBlock: startBlock,
-        toBlock: endBlock,
-        topics: [
-            '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', // Transfer
-            null,
-            ethers.utils.hexZeroPad(wallet.address, 32) // To: Wallet del usuario
-        ]
-    };
-
     try {
+        // Normalización estricta de dirección (Checksum)
+        // Esto asegura que 0xabcd sea igual a 0xAbCd
+        const checksumAddress = ethers.utils.getAddress(wallet.address);
+        const addressTopic = ethers.utils.hexZeroPad(checksumAddress, 32);
+
+        const filter = {
+            address: USDT_CONTRACT_BSC,
+            fromBlock: startBlock,
+            toBlock: endBlock,
+            topics: [
+                '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', // Topic 0: Transfer
+                null, // Topic 1: From (Cualquiera)
+                addressTopic // Topic 2: To (Nuestra wallet)
+            ]
+        };
+
         const logs = await provider.getLogs(filter);
+        
         if (logs.length > 0) {
-            console.log(`⚡ [Monitor] ${logs.length} eventos encontrados en ${wallet.address} (${startBlock}-${endBlock})`);
+            console.log(`⚡ [SCAN] Encontrados ${logs.length} eventos. Procesando...`);
             for (const log of logs) {
                 const fromAddress = ethers.utils.getAddress('0x' + log.topics[1].substring(26));
                 const rawAmount = ethers.BigNumber.from(log.data);
                 const amount = ethers.utils.formatUnits(rawAmount, 18);
-                await processDeposit(log.transactionHash, log.blockNumber, fromAddress, wallet.address, amount, wallet);
+                await processDeposit(log.transactionHash, log.blockNumber, fromAddress, checksumAddress, amount, wallet);
             }
+        } else {
+            // LOG DEBUG: Descomentar si quieres ver que escanea pero no encuentra nada
+            // console.log(`[SCAN] ${startBlock}-${endBlock}: Sin eventos.`);
         }
-        return true;
+        return true; // Scan OK (aunque no haya eventos)
+
     } catch (error) {
-        console.error(`[Monitor] Error escaneando rango ${startBlock}-${endBlock}:`, error.message);
-        return false;
+        console.error(`[Monitor] Error en getLogs (${startBlock}-${endBlock}):`, error.message);
+        return false; // Scan Failed
     }
 }
 
-// --- FUNCIÓN PRINCIPAL DEL CRON ---
+// --- MOTOR DE ESCANEO ---
 async function checkBscTransactions() {
-    console.log(`🏁 [Scan Job] Iniciando escaneo masivo con StaticProvider (BSC:56)...`);
-    
     const currentBlock = await getCurrentBscBlock();
     if (!currentBlock) {
-        console.log(`[Scan Job] Abortado: No hay respuesta RPC.`);
+        console.log(`[Scan] Error RPC. Reintentando luego.`);
         return;
     }
 
-    // Buscar wallets de usuarios
+    // 1. Cargar Wallets
     const wallets = await CryptoWallet.find({ chain: 'BSC' });
-    if (wallets.length === 0) {
-        console.log(`[Scan Job] 0 wallets encontradas en DB para escanear.`);
-        return;
-    }
+    if (wallets.length === 0) return;
 
-    console.log(`[Scan Job] Escaneando ${wallets.length} wallets hasta Bloque ${currentBlock}`);
-
-    let updatedCount = 0;
+    console.log(`🔍 [CronScan] Wallets: ${wallets.length} | Bloque Red: ${currentBlock}`);
 
     for (const wallet of wallets) {
-        // Buffer de seguridad: Empezamos 200 bloques atrás si está "al día" para asegurar reorgs cortos
-        // Si la wallet es nueva, 1000 atrás.
-        let lastScanned = wallet.lastScannedBlock > 0 ? (wallet.lastScannedBlock - 10) : (currentBlock - 1000);
         
-        // Safety Check: Si el desfase es gigante (>5000 bloques), salta al presente para no colgar Vercel.
-        // (Para tus depósitos perdidos, si fueron hoy, 5000 bloques = ~4 horas, debería alcanzarlos)
-        if ((currentBlock - lastScanned) > 5000) {
-            console.warn(`[Scan Job] ⚠️ Wallet ${wallet.address} con desfase extremo. Saltando al presente (-500).`);
-            lastScanned = currentBlock - 500; 
+        // Si la wallet no tiene lastScannedBlock (es 0 o null), iniciamos 200 bloques atrás
+        let startBlock = wallet.lastScannedBlock > 0 ? (wallet.lastScannedBlock + 1) : (currentBlock - 200);
+        
+        // CAMBIO CRÍTICO 2: ELIMINADA LA LÓGICA DE SALTO AL PRESENTE
+        // Antes: Si (Red - Start > 5000) -> Saltar.
+        // Ahora: Si (Red - Start > 5000) -> Aviso en consola, pero ESCANEAMOS.
+        // Solo saltamos si la diferencia es absurda (> 50000 bloques, varios días) para no matar la CPU
+        if ((currentBlock - startBlock) > 50000) {
+            console.warn(`⚠️ [Monitor] Wallet ${wallet.address} atrasada >3 días. Saltando.`);
+            startBlock = currentBlock - 200; 
+        } else if ((currentBlock - startBlock) > 2000) {
+            console.log(`ℹ️ [Monitor] Recuperando historial para ${wallet.address} (Atraso: ${currentBlock - startBlock} bloques).`);
         }
 
-        let startBlock = lastScanned + 1;
-        
+        // Si ya estamos al día
         if (startBlock > currentBlock) continue;
 
+        // Escaneo secuencial rápido
         const endBlock = Math.min(startBlock + BATCH_SIZE_BSC, currentBlock);
-
         const success = await scanBscBlockRange(wallet, startBlock, endBlock);
 
         if (success) {
-            // Solo avanzamos el puntero si el escaneo fue exitoso
+            // Solo guardamos el progreso si la RPC respondió bien
             await CryptoWallet.updateOne({ _id: wallet._id }, { lastScannedBlock: endBlock });
-            updatedCount++;
         }
         
-        // Breve pausa para evitar rate-limit del proveedor
-        await sleep(50);
+        // Breve espera (Respeto al nodo público)
+        await sleep(100); 
     }
-
-    console.log(`🏁 [Scan Job] Finalizado. ${updatedCount}/${wallets.length} wallets procesadas.`);
+    console.log(`🏁 [CronScan] Fin del ciclo.`);
 }
 
 // Exports
 const startMonitoring = () => {
-    console.log('✅ [Monitor Local] Loop iniciado.');
+    console.log('✅ Loop Local Iniciado.');
     setInterval(checkBscTransactions, 60000);
 };
 
